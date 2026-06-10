@@ -3,7 +3,33 @@ package com.possystem.app;
 import android.Manifest;
 import android.annotation.SuppressLint;
 import android.content.pm.PackageManager;
+import android.content.res.Resources;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
+import android.graphics.Canvas;
+import android.graphics.Color;
+import android.graphics.ColorMatrix;
+import android.graphics.ColorMatrixColorFilter;
+import android.graphics.Paint;
+import android.os.Build;
+import android.util.Base64;
+import android.util.Log;
+import android.view.LayoutInflater;
+import android.view.View;
+import android.widget.ImageView;
+import android.widget.LinearLayout;
+import android.widget.TextView;
+
 import androidx.core.app.ActivityCompat;
+
+import com.dantsu.escposprinter.EscPosPrinter;
+import com.dantsu.escposprinter.connection.bluetooth.BluetoothConnection;
+import com.dantsu.escposprinter.connection.bluetooth.BluetoothPrintersConnections;
+import com.dantsu.escposprinter.exceptions.EscPosBarcodeException;
+import com.dantsu.escposprinter.exceptions.EscPosConnectionException;
+import com.dantsu.escposprinter.exceptions.EscPosEncodingException;
+import com.dantsu.escposprinter.exceptions.EscPosParserException;
+import com.dantsu.escposprinter.textparser.PrinterTextParserImg;
 
 import com.getcapacitor.JSObject;
 import com.getcapacitor.Plugin;
@@ -12,28 +38,10 @@ import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.CapacitorPlugin;
 import com.getcapacitor.annotation.Permission;
 
-import com.dantsu.escposprinter.EscPosPrinter;
-import com.dantsu.escposprinter.connection.bluetooth.BluetoothPrintersConnections;
-import com.dantsu.escposprinter.connection.bluetooth.BluetoothConnection;
-import com.dantsu.escposprinter.exceptions.EscPosBarcodeException;
-import com.dantsu.escposprinter.exceptions.EscPosConnectionException;
-import com.dantsu.escposprinter.exceptions.EscPosEncodingException;
-import com.dantsu.escposprinter.exceptions.EscPosParserException;
-
-import android.graphics.Bitmap;
-import android.graphics.Canvas;
-import android.graphics.Color;
-import android.util.Base64;
-import android.view.LayoutInflater;
-import android.view.View;
-import android.widget.LinearLayout;
-import android.widget.TextView;
-import android.widget.ImageView;
 import org.json.JSONArray;
 import org.json.JSONObject;
+
 import java.io.ByteArrayOutputStream;
-import android.graphics.BitmapFactory;
-import android.os.Build;
 
 @CapacitorPlugin(name = "EscPosPrinter", permissions = {
     @Permission(alias = "bluetooth", strings = {
@@ -45,82 +53,271 @@ import android.os.Build;
 })
 public class EscPosPrinterPlugin extends Plugin {
 
+    private static final String TAG = "EscPosPrinter";
+
+    // =============================================
+    // Printer paper width presets
+    // =============================================
+    // 58mm paper: printWidth=48mm, charsPerLine=32
+    // 80mm paper: printWidth=72mm, charsPerLine=48
+    private static final int DPI = 203;
+
+    private static final float DEFAULT_PRINT_WIDTH_MM = 48f;
+    private static final int DEFAULT_CHARS_PER_LINE = 32;
+
+    /**
+     * Map paper width parameter to actual printable width and characters per line.
+     * paperWidth refers to the total paper roll width (58 or 80).
+     */
+    private float getPrintWidthMm(int paperWidth) {
+        if (paperWidth == 80) return 72f;
+        return DEFAULT_PRINT_WIDTH_MM; // 58mm paper → 48mm printable
+    }
+
+    private int getCharsPerLine(int paperWidth) {
+        if (paperWidth == 80) return 48;
+        return DEFAULT_CHARS_PER_LINE; // 58mm paper → 32 chars
+    }
+
+    // =============================================
+    // MAIN METHOD: Print Receipt via Bluetooth
+    // =============================================
     @SuppressLint("MissingPermission")
     @PluginMethod
     public void printReceipt(PluginCall call) {
         String macAddress = call.getString("macAddress");
         String text = call.getString("text");
+        Integer paperWidthParam = call.getInt("paperWidth");
 
-        if (macAddress == null || text == null) {
-            call.reject("macAddress and text are required");
+        if (text == null || text.isEmpty()) {
+            call.reject("Parameter 'text' is required and cannot be empty.");
             return;
         }
 
-        // Run in background thread to prevent ANR
+        // Dynamic printer width: default to 58mm if not provided
+        final int paperWidth = (paperWidthParam != null) ? paperWidthParam : 58;
+
+        // Run on a background thread to prevent ANR (Application Not Responding)
         new Thread(() -> {
             BluetoothConnection connection = null;
             try {
-                // Check permissions
+                // ── 1. Check Bluetooth permissions ──────────────────
                 if (!hasBluetoothPermissions()) {
-                    call.reject("Missing Bluetooth permissions");
+                    call.reject("Missing Bluetooth permissions. Please grant Bluetooth permissions in app settings.");
                     return;
                 }
 
-                // Find the device by MAC Address
-                BluetoothConnection[] bluetoothDevicesList = (new BluetoothPrintersConnections()).getList();
-                
-                if (bluetoothDevicesList != null) {
-                    for (BluetoothConnection device : bluetoothDevicesList) {
-                        if (device.getDevice().getAddress().equals(macAddress)) {
-                            connection = device;
-                            break;
-                        }
-                    }
-                }
-
+                // ── 2. Find Bluetooth printer ──────────────────────
+                connection = findPrinterConnection(macAddress);
                 if (connection == null) {
-                    call.reject("Printer with MAC " + macAddress + " not found or not paired.");
+                    String msg = (macAddress != null && !macAddress.isEmpty())
+                        ? "Printer with MAC address " + macAddress + " not found or not paired."
+                        : "No paired Bluetooth printer found. Please pair a printer first.";
+                    call.reject(msg);
                     return;
                 }
 
+                // ── 3. Connect to the printer ──────────────────────
                 connection.connect();
+                Log.d(TAG, "Connected to printer: " + connection.getDevice().getName());
 
-                // Initialize printer: 203 DPI, 48mm print width, 32 characters per line (EP58M Spec)
-                EscPosPrinter printer = new EscPosPrinter(connection, 203, 48f, 32);
-                
-                // Print the formatted text
-                printer.printFormattedText(text);
-                
-                // Disconnect after printing
+                // ── 4. Initialize EscPosPrinter with dynamic width ─
+                float printWidthMm = getPrintWidthMm(paperWidth);
+                int charsPerLine = getCharsPerLine(paperWidth);
+                EscPosPrinter printer = new EscPosPrinter(connection, DPI, printWidthMm, charsPerLine);
+
+                // ── 5. Load logo from native resources ─────────────
+                String logoLine = loadNativeLogoForPrinter(printer);
+
+                // ── 6. Build the final print payload ───────────────
+                // Logo (if available) + receipt text
+                StringBuilder printPayload = new StringBuilder();
+                if (logoLine != null && !logoLine.isEmpty()) {
+                    printPayload.append(logoLine);
+                    printPayload.append("\n");
+                }
+                printPayload.append(text);
+
+                // ── 7. Print and cut ───────────────────────────────
+                printer.printFormattedTextAndCut(printPayload.toString());
+                Log.d(TAG, "Receipt printed successfully.");
+
+                // ── 8. Disconnect ──────────────────────────────────
                 printer.disconnectPrinter();
 
+                // ── 9. Resolve success to frontend ─────────────────
                 JSObject ret = new JSObject();
                 ret.put("success", true);
                 call.resolve(ret);
 
             } catch (EscPosConnectionException e) {
-                e.printStackTrace();
-                call.reject("Connection failed: " + e.getMessage());
+                Log.e(TAG, "Connection error", e);
+                call.reject("Bluetooth connection failed: " + e.getMessage());
             } catch (EscPosEncodingException e) {
-                e.printStackTrace();
-                call.reject("Encoding failed: " + e.getMessage());
+                Log.e(TAG, "Encoding error", e);
+                call.reject("Text encoding error: " + e.getMessage());
             } catch (EscPosBarcodeException e) {
-                e.printStackTrace();
-                call.reject("Barcode failed: " + e.getMessage());
+                Log.e(TAG, "Barcode error", e);
+                call.reject("Barcode rendering error: " + e.getMessage());
             } catch (EscPosParserException e) {
-                e.printStackTrace();
-                call.reject("Parser failed: " + e.getMessage());
+                Log.e(TAG, "Parser error", e);
+                call.reject("ESC/POS text parsing error: " + e.getMessage());
             } catch (Exception e) {
-                e.printStackTrace();
-                call.reject("Unknown error: " + e.getMessage());
+                Log.e(TAG, "Unexpected error during printing", e);
+                call.reject("Print failed: " + e.getMessage());
             } finally {
+                // Always disconnect to free the Bluetooth socket
                 if (connection != null) {
-                    connection.disconnect();
+                    try {
+                        connection.disconnect();
+                    } catch (Exception ignored) {
+                        // Swallow disconnect errors silently
+                    }
                 }
             }
         }).start();
     }
 
+    // =============================================
+    // HELPER: Find printer by MAC or first paired
+    // =============================================
+    @SuppressLint("MissingPermission")
+    private BluetoothConnection findPrinterConnection(String macAddress) {
+        BluetoothConnection[] printers = new BluetoothPrintersConnections().getList();
+        if (printers == null || printers.length == 0) {
+            return null;
+        }
+
+        // If a specific MAC address was provided, find that exact printer
+        if (macAddress != null && !macAddress.isEmpty()) {
+            for (BluetoothConnection printer : printers) {
+                if (printer.getDevice().getAddress().equalsIgnoreCase(macAddress)) {
+                    return printer;
+                }
+            }
+            return null; // Requested MAC not found
+        }
+
+        // No MAC specified → use the first available paired printer
+        Log.d(TAG, "No MAC address specified, using first paired printer: " + printers[0].getDevice().getName());
+        return printers[0];
+    }
+
+    // =============================================
+    // HELPER: Load logo from native resources
+    // =============================================
+    /**
+     * Loads logo from R.drawable.logo (primary) or R.mipmap.ic_launcher (fallback).
+     * Converts it to a monochrome bitmap suitable for thermal printing.
+     *
+     * @param printer The EscPosPrinter instance (needed for PrinterTextParserImg)
+     * @return A Dantsu-formatted image line like "[C]<img>...</img>" or null if no logo found
+     */
+    private String loadNativeLogoForPrinter(EscPosPrinter printer) {
+        try {
+            Resources res = getContext().getResources();
+            String packageName = getContext().getPackageName();
+            Bitmap logoBitmap = null;
+
+            // Priority 1: Try R.drawable.logo
+            int logoResId = res.getIdentifier("logo", "drawable", packageName);
+            if (logoResId != 0) {
+                logoBitmap = BitmapFactory.decodeResource(res, logoResId);
+                Log.d(TAG, "Logo loaded from R.drawable.logo");
+            }
+
+            // Priority 2: Fallback to R.mipmap.ic_launcher
+            if (logoBitmap == null) {
+                int launcherResId = res.getIdentifier("ic_launcher", "mipmap", packageName);
+                if (launcherResId != 0) {
+                    logoBitmap = BitmapFactory.decodeResource(res, launcherResId);
+                    Log.d(TAG, "Logo loaded from R.mipmap.ic_launcher (fallback)");
+                }
+            }
+
+            if (logoBitmap == null) {
+                Log.w(TAG, "No logo resource found. Skipping logo.");
+                return null;
+            }
+
+            // Convert to monochrome (1-bit black/white) for thermal printing
+            Bitmap monochromeBitmap = convertToMonochrome(logoBitmap);
+
+            // Recycle the original color bitmap to free memory
+            if (logoBitmap != monochromeBitmap) {
+                logoBitmap.recycle();
+            }
+
+            // Use Dantsu's PrinterTextParserImg to convert bitmap to ESC/POS image data
+            String imageHex = PrinterTextParserImg.bitmapToHexadecimalString(printer, monochromeBitmap);
+
+            // Recycle the monochrome bitmap
+            monochromeBitmap.recycle();
+
+            // Return centered image tag for the Dantsu formatter
+            return "[C]<img>" + imageHex + "</img>\n";
+
+        } catch (Exception e) {
+            Log.e(TAG, "Error loading logo from native resources", e);
+            return null; // Skip logo gracefully — don't fail the entire print job
+        }
+    }
+
+    // =============================================
+    // HELPER: Convert Bitmap to monochrome
+    // =============================================
+    /**
+     * Converts a color Bitmap to a monochrome (black and white) Bitmap
+     * suitable for ESC/POS thermal printers.
+     *
+     * Uses a desaturation + threshold approach:
+     * 1. Desaturate to grayscale
+     * 2. Apply threshold: pixels above 128 brightness → white, below → black
+     */
+    private Bitmap convertToMonochrome(Bitmap source) {
+        int width = source.getWidth();
+        int height = source.getHeight();
+
+        // Create a mutable copy in ARGB_8888 format
+        Bitmap grayscale = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
+        Canvas canvas = new Canvas(grayscale);
+
+        // Apply grayscale color filter
+        Paint paint = new Paint();
+        ColorMatrix cm = new ColorMatrix();
+        cm.setSaturation(0); // Fully desaturate
+        paint.setColorFilter(new ColorMatrixColorFilter(cm));
+        canvas.drawBitmap(source, 0, 0, paint);
+
+        // Threshold to pure black/white
+        Bitmap monochrome = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
+        for (int y = 0; y < height; y++) {
+            for (int x = 0; x < width; x++) {
+                int pixel = grayscale.getPixel(x, y);
+                int alpha = Color.alpha(pixel);
+                int r = Color.red(pixel);
+                int g = Color.green(pixel);
+                int b = Color.blue(pixel);
+                // Luminance-weighted grayscale value
+                int luminance = (int) (0.299 * r + 0.587 * g + 0.114 * b);
+                // If pixel is transparent or bright enough, make it white; otherwise black
+                if (alpha < 128 || luminance > 128) {
+                    monochrome.setPixel(x, y, Color.WHITE);
+                } else {
+                    monochrome.setPixel(x, y, Color.BLACK);
+                }
+            }
+        }
+
+        // Recycle intermediate grayscale bitmap
+        grayscale.recycle();
+
+        return monochrome;
+    }
+
+    // =============================================
+    // GENERATE RECEIPT IMAGE (for Share Intent)
+    // =============================================
     @PluginMethod
     public void generateReceiptImage(PluginCall call) {
         getActivity().runOnUiThread(() -> {
@@ -154,24 +351,33 @@ public class EscPosPrinterPlugin extends Plugin {
                 TextView totalText = receiptView.findViewById(R.id.totalText);
                 TextView paymentMethodText = receiptView.findViewById(R.id.paymentMethodText);
 
-                // Handle logo
-                String logoBase64 = data.optString("logoBase64", "");
+                // Handle logo — load from native resources for consistency
                 ImageView logoImage = receiptView.findViewById(R.id.logoImage);
-                if (!logoBase64.isEmpty()) {
-                    try {
-                        byte[] logoBytes = Base64.decode(logoBase64, Base64.DEFAULT);
-                        Bitmap logoBitmap = BitmapFactory.decodeByteArray(logoBytes, 0, logoBytes.length);
-                        if (logoBitmap != null) {
-                            logoImage.setImageBitmap(logoBitmap);
-                            logoImage.setVisibility(View.VISIBLE);
+                try {
+                    Resources res = getContext().getResources();
+                    String packageName = getContext().getPackageName();
+                    int logoResId = res.getIdentifier("logo", "drawable", packageName);
+                    if (logoResId != 0) {
+                        logoImage.setImageResource(logoResId);
+                        logoImage.setVisibility(View.VISIBLE);
+                    } else {
+                        // Fallback: use base64 from data if available
+                        String logoBase64 = data.optString("logoBase64", "");
+                        if (!logoBase64.isEmpty()) {
+                            byte[] logoBytes = Base64.decode(logoBase64, Base64.DEFAULT);
+                            Bitmap logoBitmap = BitmapFactory.decodeByteArray(logoBytes, 0, logoBytes.length);
+                            if (logoBitmap != null) {
+                                logoImage.setImageBitmap(logoBitmap);
+                                logoImage.setVisibility(View.VISIBLE);
+                            } else {
+                                logoImage.setVisibility(View.GONE);
+                            }
                         } else {
                             logoImage.setVisibility(View.GONE);
                         }
-                    } catch (Exception e) {
-                        e.printStackTrace();
-                        logoImage.setVisibility(View.GONE);
                     }
-                } else {
+                } catch (Exception e) {
+                    Log.e(TAG, "Error loading logo for receipt image", e);
                     logoImage.setVisibility(View.GONE);
                 }
 
@@ -242,7 +448,7 @@ public class EscPosPrinterPlugin extends Plugin {
                 call.resolve(ret);
 
             } catch (Exception e) {
-                e.printStackTrace();
+                Log.e(TAG, "Error generating receipt image", e);
                 call.reject("Error generating image: " + e.getMessage());
             }
         });
@@ -291,7 +497,7 @@ public class EscPosPrinterPlugin extends Plugin {
                 ret.put("devices", deviceList);
                 call.resolve(ret);
             } catch (Exception e) {
-                e.printStackTrace();
+                Log.e(TAG, "Error scanning Bluetooth devices", e);
                 call.reject("Error scanning Bluetooth: " + e.getMessage());
             }
         }).start();

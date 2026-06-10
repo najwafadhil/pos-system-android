@@ -93,6 +93,10 @@ class DexieDBManager {
                 ...transaction,
                 created_at: transaction.created_at || new Date().toISOString(),
                 sync_status: 'pending',
+                retry_count: 0,
+                max_retries: 10,
+                last_attempt: null,
+                last_error: null,
             };
 
             await this.db.offline_transactions.add(transactionData);
@@ -208,6 +212,86 @@ class DexieDBManager {
             console.log('🧹 All offline transactions cleared');
         } catch (error) {
             console.error('❌ Error clearing offline transactions:', error);
+        }
+    }
+
+    /**
+     * Mengambil transaksi yang gagal sync (sync_status = 'failed').
+     * @returns {Array} Daftar transaksi yang gagal
+     */
+    async getFailedTransactions() {
+        try {
+            return await this.db.offline_transactions
+                .where('sync_status')
+                .equals('failed')
+                .toArray();
+        } catch (error) {
+            console.error('❌ Error getting failed transactions:', error);
+            return [];
+        }
+    }
+
+    /**
+     * Mengambil semua transaksi yang bisa di-retry:
+     * - sync_status = 'pending' (belum pernah dicoba)
+     * - sync_status = 'failed' DAN retry_count < max_retries
+     * @returns {Array} Daftar transaksi yang siap disinkronisasi
+     */
+    async getRetryableTransactions() {
+        try {
+            const all = await this.db.offline_transactions
+                .where('sync_status')
+                .anyOf('pending', 'failed')
+                .toArray();
+            // Filter: hanya transaksi yang belum melebihi max_retries
+            return all.filter(tx => {
+                const maxRetries = tx.max_retries || 10;
+                const retryCount = tx.retry_count || 0;
+                return retryCount < maxRetries;
+            });
+        } catch (error) {
+            console.error('❌ Error getting retryable transactions:', error);
+            return [];
+        }
+    }
+
+    /**
+     * Increment retry_count dan update last_attempt timestamp.
+     * @param {string} id - UUID transaksi
+     */
+    async incrementRetryCount(id) {
+        try {
+            const tx = await this.db.offline_transactions.get(id);
+            if (tx) {
+                await this.db.offline_transactions.update(id, {
+                    retry_count: (tx.retry_count || 0) + 1,
+                    last_attempt: new Date().toISOString(),
+                });
+            }
+        } catch (error) {
+            console.error('❌ Error incrementing retry count:', error);
+        }
+    }
+
+    /**
+     * Reset semua transaksi 'failed' kembali ke 'pending' agar di-retry.
+     * Dipanggil saat koneksi kembali online.
+     */
+    async resetFailedForRetry() {
+        try {
+            const failed = await this.getFailedTransactions();
+            for (const tx of failed) {
+                const maxRetries = tx.max_retries || 10;
+                const retryCount = tx.retry_count || 0;
+                if (retryCount < maxRetries) {
+                    await this.db.offline_transactions.update(tx.id, {
+                        sync_status: 'pending',
+                    });
+                }
+            }
+            console.log(`🔄 Reset ${failed.length} failed transactions for retry`);
+        } catch (error) {
+            console.error('❌ Error resetting failed transactions:', error);
         }
     }
 

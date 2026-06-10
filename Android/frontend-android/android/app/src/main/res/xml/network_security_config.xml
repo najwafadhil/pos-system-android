@@ -1,7 +1,28 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+    Network Security Configuration
+    ================================
+    Android 9 (API 28)+ blocks cleartext (HTTP) traffic by default.
+    This config explicitly allows cleartext ONLY to the local backend API
+    and development hosts, while keeping all other traffic secure (HTTPS-only).
+
+    Reference: https://developer.android.com/training/articles/security-config
+-->
 <network-security-config>
+    <!-- Default: block cleartext for all domains not listed below -->
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+
+    <!-- Allow cleartext HTTP only for the local backend API server -->
     <domain-config cleartextTrafficPermitted="true">
+        <!-- Production local API server -->
         <domain includeSubdomains="false">202.10.37.48</domain>
+        <!-- Development: Android localhost -->
         <domain includeSubdomains="false">localhost</domain>
+        <!-- Development: Android emulator host loopback -->
+        <domain includeSubdomains="false">10.0.2.2</domain>
     </domain-config>
 </network-security-config>

@@ -442,17 +442,15 @@ const printViaCapacitorBluetooth = async (transaction, transactionCode, macAddre
     try {
         const text = generateReceiptText(transaction, transactionCode);
         
-        // Get logo for ESC/POS print
-        let logoBase64 = '';
-        const appLogo = localStorage.getItem('app_logo') || '';
-        if (appLogo && appLogo.startsWith('data:')) {
-            logoBase64 = appLogo.split(',')[1] || '';
-        }
+        // Paper width from settings (default 58mm for EP58M printers)
+        const paperWidth = parseInt(localStorage.getItem('printer_paper_width') || '58', 10);
         
+        // Logo is loaded natively from R.drawable.logo — no base64 needed.
+        // This avoids Capacitor Bridge latency and OOM risks during continuous printing.
         const result = await EscPosPrinterPlugin.printReceipt({
             macAddress: macAddress,
             text: text,
-            logoBase64: logoBase64
+            paperWidth: paperWidth
         });
         
         if (!result.success) {
