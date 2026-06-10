@@ -1,0 +1,12 @@
+# Node
+node_modules/
+
+# Android
+build/
+.gradle/
+local.properties
+.idea/
+*.iml
+*.class
+*.apk
+*.aab

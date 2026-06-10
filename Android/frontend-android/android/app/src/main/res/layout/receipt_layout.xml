@@ -1,0 +1,192 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="384px"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:background="#FFFFFF"
+    android:padding="20px">
+
+    <ImageView
+        android:id="@+id/logoImage"
+        android:layout_width="120px"
+        android:layout_height="120px"
+        android:layout_gravity="center_horizontal"
+        android:layout_marginBottom="10px"
+        android:scaleType="fitCenter" />
+
+    <TextView
+        android:id="@+id/appNameText"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:gravity="center"
+        android:textStyle="bold"
+        android:textSize="24px"
+        android:textColor="#000000" />
+
+    <TextView
+        android:id="@+id/addressText"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:gravity="center"
+        android:textSize="16px"
+        android:textColor="#000000"
+        android:layout_marginBottom="10px" />
+
+    <View
+        android:layout_width="match_parent"
+        android:layout_height="2px"
+        android:background="#000000"
+        android:layout_marginBottom="10px"/>
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal">
+        <TextView
+            android:layout_width="80px"
+            android:layout_height="wrap_content"
+            android:text="Waktu"
+            android:textColor="#000000"
+            android:textSize="18px"/>
+        <TextView
+            android:id="@+id/timeText"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textColor="#000000"
+            android:textSize="18px"/>
+    </LinearLayout>
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal">
+        <TextView
+            android:layout_width="80px"
+            android:layout_height="wrap_content"
+            android:text="Kasir"
+            android:textColor="#000000"
+            android:textSize="18px"/>
+        <TextView
+            android:id="@+id/cashierText"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textColor="#000000"
+            android:textSize="18px"/>
+    </LinearLayout>
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal">
+        <TextView
+            android:layout_width="80px"
+            android:layout_height="wrap_content"
+            android:text="Trx"
+            android:textColor="#000000"
+            android:textSize="18px"/>
+        <TextView
+            android:id="@+id/trxText"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textColor="#000000"
+            android:textSize="18px"/>
+    </LinearLayout>
+
+    <LinearLayout
+        android:id="@+id/customerLayout"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:visibility="gone">
+        <TextView
+            android:layout_width="80px"
+            android:layout_height="wrap_content"
+            android:text="Plg"
+            android:textColor="#000000"
+            android:textSize="18px"/>
+        <TextView
+            android:id="@+id/customerText"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textColor="#000000"
+            android:textSize="18px"/>
+    </LinearLayout>
+
+    <View
+        android:layout_width="match_parent"
+        android:layout_height="2px"
+        android:background="#000000"
+        android:layout_marginTop="10px"
+        android:layout_marginBottom="10px"/>
+
+    <!-- CONTAINER ITEM DINAMIS -->
+    <LinearLayout
+        android:id="@+id/itemsContainer"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical" />
+
+    <View
+        android:layout_width="match_parent"
+        android:layout_height="2px"
+        android:background="#000000"
+        android:layout_marginTop="10px"
+        android:layout_marginBottom="10px"/>
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal">
+        <TextView
+            android:layout_width="0dp"
+            android:layout_weight="1"
+            android:layout_height="wrap_content"
+            android:text="TOTAL"
+            android:textStyle="bold"
+            android:textColor="#000000"
+            android:textSize="22px"/>
+        <TextView
+            android:id="@+id/totalText"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:textStyle="bold"
+            android:textColor="#000000"
+            android:textSize="22px"/>
+    </LinearLayout>
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal">
+        <TextView
+            android:layout_width="0dp"
+            android:layout_weight="1"
+            android:layout_height="wrap_content"
+            android:text="BAYAR"
+            android:textColor="#000000"
+            android:textSize="18px"/>
+        <TextView
+            android:id="@+id/paymentMethodText"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:textColor="#000000"
+            android:textSize="18px"/>
+    </LinearLayout>
+
+    <View
+        android:layout_width="match_parent"
+        android:layout_height="2px"
+        android:background="#000000"
+        android:layout_marginTop="10px"
+        android:layout_marginBottom="10px"/>
+
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:gravity="center"
+        android:text="Terima Kasih\nAtas Kunjungan Anda"
+        android:textSize="18px"
+        android:textColor="#000000"
+        android:layout_marginBottom="20px" />
+
+</LinearLayout>
