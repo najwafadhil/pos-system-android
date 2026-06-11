@@ -26,18 +26,18 @@ export const printReceipt = async (transaction, transactionCode) => {
             // printThermalHTML() menggunakan window.open() yang akan
             // membuka Chrome di Android, bukan print dialog.
             // =============================================
-            const btMac = localStorage.getItem('bt_printer_mac');
-            if (btMac) {
-                try {
-                    await printViaCapacitorBluetooth(transaction, transactionCode, btMac);
-                    return; // Berhasil via BT Native
-                } catch (btError) {
-                    console.error('Bluetooth Native Print Error:', btError);
-                    // Lanjut ke Share Intent jika BT gagal
-                }
+            const btMac = localStorage.getItem('bt_printer_mac') || '';
+            try {
+                // SELALU coba direct print via native Bluetooth terlebih dahulu.
+                // Plugin native akan auto-detect printer paired pertama jika btMac kosong ("").
+                await printViaCapacitorBluetooth(transaction, transactionCode, btMac);
+                return; // Berhasil via BT Native
+            } catch (btError) {
+                console.error('Bluetooth Native Print Error:', btError);
+                // Native BT gagal — lanjut ke fallback Share Intent
             }
 
-            // Share sebagai gambar → fallback ke teks jika gagal
+            // Fallback: Share sebagai gambar → fallback ke teks jika gagal
             try {
                 await shareReceiptAsImage(transaction, transactionCode);
             } catch (shareError) {
