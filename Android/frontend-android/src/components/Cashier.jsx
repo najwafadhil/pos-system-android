@@ -532,27 +532,29 @@ const Cashier = ({ isOnline, onSyncUpdate, syncVersion = 0 }) => {
                         ))}
                     </div>
 
-                    {/* Menu grid — virtualized */}
-                    <VirtuosoGrid
-                        useWindowScroll
-                        totalCount={filteredMenu.length}
-                        components={{
-                            List: GridList,
-                            Item: GridItem
-                        }}
-                        itemContent={(index) => {
-                            const item = filteredMenu[index];
-                            if (!item) return null;
-                            const qty = cartQuantityMap[item.id] || 0;
-                            return (
-                                <ProductCard 
-                                    item={item} 
-                                    qty={qty} 
-                                    onAdd={addToCart} 
-                                />
-                            );
-                        }}
-                    />
+                    {/* Menu grid — virtualized (scrolls in own container, not window) */}
+                    <div style={{ height: 'calc(100vh - 260px)', minHeight: '300px', overflowY: 'auto' }}>
+                        <VirtuosoGrid
+                            totalCount={filteredMenu.length}
+                            overscan={200}
+                            components={{
+                                List: GridList,
+                                Item: GridItem
+                            }}
+                            itemContent={(index) => {
+                                const item = filteredMenu[index];
+                                if (!item) return null;
+                                const qty = cartQuantityMap[item.id] || 0;
+                                return (
+                                    <ProductCard 
+                                        item={item} 
+                                        qty={qty} 
+                                        onAdd={addToCart} 
+                                    />
+                                );
+                            }}
+                        />
+                    </div>
 
                     {filteredMenu.length === 0 && (
                         <div style={{ textAlign: 'center', padding: '48px', color: '#9ca3af' }}>Tidak ada menu ditemukan</div>

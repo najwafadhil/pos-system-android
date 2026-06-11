@@ -319,20 +319,51 @@ export default function useSync() {
     //
     // IMPORTANT: Dexie (IndexedDB) operations stay on the main
     // thread to avoid Capacitor/WebView locking issues.
+    //
+    // SAFETY:
+    // - 30s timeout prevents hanging if Android OS suspends the worker
+    // - BULK_NOT_FOUND handling gracefully falls back to single sync
+    //   if the /bulk endpoint returns 404
     // =============================================
+    const WORKER_TIMEOUT_MS = 30000; // 30 seconds
+
     const syncBulk = (transactions) => {
         return new Promise((resolve) => {
             const worker = workerRef.current;
 
             // If worker is not available, fallback immediately
             if (!worker) {
-                console.warn('⚠️ Web Worker not available, falling back to single sync');
+                console.warn('\u26a0\ufe0f Web Worker not available, falling back to single sync');
                 resolve(false);
                 return;
             }
 
             let totalSynced = 0;
             let totalFailed = 0;
+            let settled = false;
+
+            // --- Fix 2: Timeout guard ---
+            const timeoutId = setTimeout(() => {
+                if (settled) return;
+                settled = true;
+                worker.removeEventListener('message', handleMessage);
+                console.error('\u23f0 Worker sync timed out after 30s. Terminating and restarting worker.');
+
+                // Terminate the stuck worker and create a fresh one
+                try {
+                    worker.terminate();
+                    workerRef.current = new Worker(
+                        new URL('../workers/sync.worker.js', import.meta.url)
+                    );
+                    console.log('\u2705 Sync Web Worker restarted after timeout');
+                } catch (restartErr) {
+                    console.warn('\u26a0\ufe0f Worker restart failed:', restartErr.message);
+                    workerRef.current = null;
+                }
+
+                // Resolve false so syncNow falls back to single sync
+                resolve(false);
+            }, WORKER_TIMEOUT_MS);
 
             const handleMessage = async (event) => {
                 const msg = event.data;
@@ -340,39 +371,57 @@ export default function useSync() {
                 if (msg.type === 'CHUNK_RESULT') {
                     const { synced_ids, failed } = msg.payload;
 
-                    // ✅ Process synced transactions on main thread (Dexie)
+                    // \u2705 Process synced transactions on main thread (Dexie)
                     for (const syncedId of synced_ids) {
                         try {
                             await dbManager.markTransactionSynced(syncedId);
                             await dbManager.deletePendingTransaction(syncedId);
                             totalSynced++;
                         } catch (dbErr) {
-                            console.error('❌ Dexie error processing synced ID:', syncedId, dbErr);
+                            console.error('\u274c Dexie error processing synced ID:', syncedId, dbErr);
                         }
                     }
 
-                    // ❌ Mark failed transactions on main thread (Dexie)
+                    // \u274c Mark failed transactions on main thread (Dexie)
                     for (const fail of failed) {
                         try {
                             await dbManager.markTransactionFailed(fail.id, fail.error);
                             totalFailed++;
                         } catch (dbErr) {
-                            console.error('❌ Dexie error marking failed ID:', fail.id, dbErr);
+                            console.error('\u274c Dexie error marking failed ID:', fail.id, dbErr);
                         }
                     }
 
-                    console.log(`📦 Chunk processed: +${synced_ids.length} synced, +${failed.length} failed`);
+                    console.log(`\ud83d\udce6 Chunk processed: +${synced_ids.length} synced, +${failed.length} failed`);
+                }
+
+                // --- Fix 3: Bulk endpoint not found (404) ---
+                // Don't mark transactions as failed; just fallback to single sync
+                if (msg.type === 'BULK_NOT_FOUND') {
+                    if (settled) return;
+                    settled = true;
+                    clearTimeout(timeoutId);
+                    worker.removeEventListener('message', handleMessage);
+                    console.warn('\u26a0\ufe0f Bulk endpoint returned 404. Falling back to single sync.');
+                    resolve(false);
+                    return;
                 }
 
                 if (msg.type === 'SYNC_COMPLETE') {
+                    if (settled) return;
+                    settled = true;
+                    clearTimeout(timeoutId);
                     worker.removeEventListener('message', handleMessage);
-                    console.log(`✅ Worker bulk sync complete: ${totalSynced} synced, ${totalFailed} failed`);
+                    console.log(`\u2705 Worker bulk sync complete: ${totalSynced} synced, ${totalFailed} failed`);
                     resolve(totalSynced > 0); // true if at least some succeeded
                 }
 
                 if (msg.type === 'SYNC_FATAL_ERROR') {
+                    if (settled) return;
+                    settled = true;
+                    clearTimeout(timeoutId);
                     worker.removeEventListener('message', handleMessage);
-                    console.error('❌ Worker fatal error:', msg.error);
+                    console.error('\u274c Worker fatal error:', msg.error);
                     resolve(false);
                 }
             };

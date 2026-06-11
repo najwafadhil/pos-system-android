@@ -31,6 +31,12 @@ self.onmessage = async (e) => {
                                 failed: result.failed || []
                             }
                         });
+                    } else if (response.status === 404) {
+                        // --- Fix 3: Bulk endpoint does not exist ---
+                        // Signal main thread to fallback to single sync
+                        // WITHOUT marking any transactions as failed
+                        self.postMessage({ type: 'BULK_NOT_FOUND' });
+                        return; // Exit the for-loop entirely
                     } else {
                         const errText = await response.text();
                         // Mark entire chunk as failed
