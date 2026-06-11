@@ -456,6 +456,165 @@ public class EscPosPrinterPlugin extends Plugin {
     }
 
     // =============================================
+    // PRINT IMAGE VIA BLUETOOTH
+    // =============================================
+    @SuppressLint("MissingPermission")
+    @PluginMethod
+    public void printImage(PluginCall call) {
+        String macAddress = call.getString("macAddress");
+        String base64Image = call.getString("base64Image");
+
+        if (base64Image == null || base64Image.isEmpty()) {
+            call.reject("Parameter 'base64Image' is required.");
+            return;
+        }
+
+        // Remove prefix if exists (e.g., "data:image/png;base64,")
+        if (base64Image.contains(",")) {
+            base64Image = base64Image.split(",")[1];
+        }
+
+        final String finalBase64 = base64Image;
+
+        new Thread(() -> {
+            BluetoothConnection connection = null;
+            try {
+                if (!hasBluetoothPermissions()) {
+                    call.reject("Missing Bluetooth permissions.");
+                    return;
+                }
+
+                connection = findPrinterConnection(macAddress);
+                if (connection == null) {
+                    call.reject("Printer not found or not paired.");
+                    return;
+                }
+
+                connection.connect();
+                Log.d(TAG, "Connected to printer for Image Printing.");
+
+                // Decode base64 to bitmap
+                byte[] decodedBytes = Base64.decode(finalBase64, Base64.DEFAULT);
+                Bitmap bitmap = BitmapFactory.decodeByteArray(decodedBytes, 0, decodedBytes.length);
+
+                if (bitmap == null) {
+                    call.reject("Failed to decode base64 image.");
+                    return;
+                }
+
+                // Resize bitmap to max 384 pixels width (for 58mm printer)
+                Bitmap resizedBitmap = resizeBitmap(bitmap, 384);
+
+                // Convert to ESC/POS Raster byte array
+                byte[] rasterData = decodeBitmapToEscPosRaster(resizedBitmap);
+
+                // Initialize printer command arrays
+                byte[] initCommand = new byte[]{0x1B, 0x40}; // ESC @ (Initialize)
+                byte[] alignCenter = new byte[]{0x1B, 0x61, 0x01}; // ESC a 1 (Center alignment)
+                byte[] alignLeft = new byte[]{0x1B, 0x61, 0x00}; // ESC a 0 (Left alignment)
+                byte[] cutCommand = new byte[]{0x1D, 0x56, 0x41, 0x10}; // GS V A 16 (Cut paper)
+
+                // Send commands and data
+                connection.write(initCommand);
+                connection.write(alignCenter);
+                connection.write(rasterData);
+                
+                // Add some blank lines before cutting
+                connection.write(new byte[]{0x0A, 0x0A, 0x0A});
+                connection.write(alignLeft);
+                connection.write(cutCommand);
+                
+                connection.send(); // Ensure data is flushed to printer
+
+                Log.d(TAG, "Image printed successfully.");
+
+                JSObject ret = new JSObject();
+                ret.put("success", true);
+                call.resolve(ret);
+
+            } catch (Exception e) {
+                Log.e(TAG, "Error printing image", e);
+                call.reject("Print image failed: " + e.getMessage());
+            } finally {
+                if (connection != null) {
+                    try {
+                        connection.disconnect();
+                    } catch (Exception ignored) {}
+                }
+            }
+        }).start();
+    }
+
+    private Bitmap resizeBitmap(Bitmap original, int maxWidth) {
+        int width = original.getWidth();
+        int height = original.getHeight();
+
+        if (width <= maxWidth) {
+            return original;
+        }
+
+        float ratio = (float) width / maxWidth;
+        int newHeight = (int) (height / ratio);
+
+        return Bitmap.createScaledBitmap(original, maxWidth, newHeight, true);
+    }
+
+    private byte[] decodeBitmapToEscPosRaster(Bitmap bitmap) {
+        int width = bitmap.getWidth();
+        int height = bitmap.getHeight();
+
+        // Width in bytes (1 byte = 8 pixels). Ceiling division by 8.
+        int xL = (width + 7) / 8;
+        int xH = xL >> 8;
+        int yL = height & 0xFF;
+        int yH = height >> 8;
+
+        ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
+
+        // ESC/POS Command for Raster Bit-Image: GS v 0
+        outputStream.write(0x1D); // GS
+        outputStream.write(0x76); // v
+        outputStream.write(0x30); // 0
+        outputStream.write(0x00); // m=0 (Normal mode)
+
+        outputStream.write(xL);
+        outputStream.write(xH);
+        outputStream.write(yL);
+        outputStream.write(yH);
+
+        for (int y = 0; y < height; y++) {
+            for (int xByte = 0; xByte < xL; xByte++) {
+                byte b = 0;
+                for (int bit = 0; bit < 8; bit++) {
+                    int x = xByte * 8 + bit;
+                    if (x < width) {
+                        int pixel = bitmap.getPixel(x, y);
+                        int alpha = Color.alpha(pixel);
+                        int r = Color.red(pixel);
+                        int g = Color.green(pixel);
+                        int bColor = Color.blue(pixel);
+
+                        // Treat transparent as white
+                        if (alpha < 128) {
+                            // bit stays 0 (white)
+                        } else {
+                            // Calculate luminance to determine black or white
+                            int luminance = (int) (0.299 * r + 0.587 * g + 0.114 * bColor);
+                            if (luminance < 128) {
+                                // Dark pixel -> set bit to 1 (print)
+                                b |= (1 << (7 - bit));
+                            }
+                        }
+                    }
+                }
+                outputStream.write(b);
+            }
+        }
+
+        return outputStream.toByteArray();
+    }
+
+    // =============================================
     // HELPER: Check Bluetooth permissions
     // =============================================
     private boolean hasBluetoothPermissions() {

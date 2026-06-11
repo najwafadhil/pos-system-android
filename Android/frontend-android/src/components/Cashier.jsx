@@ -253,6 +253,7 @@ const Cashier = ({ isOnline, onSyncUpdate, syncVersion = 0 }) => {
             // Transaksi sudah tersimpan — cart aman dibersihkan.
             // =============================================
             clearCart();
+            setShowMobileCart(false);
             setIsProcessing(false);
 
             // Buka ReceiptPreviewModal (menggantikan alert + auto-print)
