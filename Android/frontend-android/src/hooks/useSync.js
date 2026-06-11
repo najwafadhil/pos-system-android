@@ -92,6 +92,8 @@ export default function useSync() {
     const masterDataFetchingRef = useRef(false);
     // Ref to track if localStorage migration has been attempted
     const migrationDoneRef = useRef(false);
+    // Ref for Web Worker instance (Phase 4: offload heavy sync to background thread)
+    const workerRef = useRef(null);
 
     // =============================================
     // REFRESH PENDING COUNT
@@ -307,45 +309,86 @@ export default function useSync() {
     };
 
     // =============================================
-    // BULK SYNC FUNCTION
+    // BULK SYNC VIA WEB WORKER (Phase 4)
     // =============================================
-    // Mengirim semua transaksi pending sekaligus (bulk) ke
-    // endpoint /api/transactions/sync/bulk untuk efisiensi.
-    // Jika bulk endpoint gagal, fallback ke sync satu per satu.
+    // Offloads JSON.stringify + fetch to a background thread.
+    // The worker chunks transactions into batches of 50 and
+    // sends them sequentially. For each batch, it reports back
+    // synced/failed IDs so Dexie can be updated progressively
+    // on the main thread (partial success handling).
+    //
+    // IMPORTANT: Dexie (IndexedDB) operations stay on the main
+    // thread to avoid Capacitor/WebView locking issues.
     // =============================================
-    const syncBulk = async (transactions) => {
-        try {
-            const response = await fetch(`${API_BASE}/api/transactions/sync/bulk`, {
-                method: 'POST',
-                headers: { 
-                    'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${localStorage.getItem('auth_token')}`
-                },
-                body: JSON.stringify({ transactions }),
-            });
+    const syncBulk = (transactions) => {
+        return new Promise((resolve) => {
+            const worker = workerRef.current;
 
-            if (response.ok) {
-                const result = await response.json();
-                // ✅ Hapus HANYA transaksi yang berhasil (ada di synced_ids)
-                for (const syncedId of (result.synced_ids || [])) {
-                    await dbManager.markTransactionSynced(syncedId);
-                    await dbManager.deletePendingTransaction(syncedId);
-                }
-                // ❌ Tandai yang gagal
-                for (const failed of (result.failed || [])) {
-                    await dbManager.markTransactionFailed(
-                        failed.id,
-                        failed.error
-                    );
-                }
-                console.log(`✅ Bulk sync: ${result.synced_ids?.length || 0} synced, ${result.failed?.length || 0} failed`);
-                return true;
+            // If worker is not available, fallback immediately
+            if (!worker) {
+                console.warn('⚠️ Web Worker not available, falling back to single sync');
+                resolve(false);
+                return;
             }
-            return false; // Fallback ke single sync
-        } catch (error) {
-            console.error('Bulk sync endpoint not available, falling back to single sync');
-            return false;
-        }
+
+            let totalSynced = 0;
+            let totalFailed = 0;
+
+            const handleMessage = async (event) => {
+                const msg = event.data;
+
+                if (msg.type === 'CHUNK_RESULT') {
+                    const { synced_ids, failed } = msg.payload;
+
+                    // ✅ Process synced transactions on main thread (Dexie)
+                    for (const syncedId of synced_ids) {
+                        try {
+                            await dbManager.markTransactionSynced(syncedId);
+                            await dbManager.deletePendingTransaction(syncedId);
+                            totalSynced++;
+                        } catch (dbErr) {
+                            console.error('❌ Dexie error processing synced ID:', syncedId, dbErr);
+                        }
+                    }
+
+                    // ❌ Mark failed transactions on main thread (Dexie)
+                    for (const fail of failed) {
+                        try {
+                            await dbManager.markTransactionFailed(fail.id, fail.error);
+                            totalFailed++;
+                        } catch (dbErr) {
+                            console.error('❌ Dexie error marking failed ID:', fail.id, dbErr);
+                        }
+                    }
+
+                    console.log(`📦 Chunk processed: +${synced_ids.length} synced, +${failed.length} failed`);
+                }
+
+                if (msg.type === 'SYNC_COMPLETE') {
+                    worker.removeEventListener('message', handleMessage);
+                    console.log(`✅ Worker bulk sync complete: ${totalSynced} synced, ${totalFailed} failed`);
+                    resolve(totalSynced > 0); // true if at least some succeeded
+                }
+
+                if (msg.type === 'SYNC_FATAL_ERROR') {
+                    worker.removeEventListener('message', handleMessage);
+                    console.error('❌ Worker fatal error:', msg.error);
+                    resolve(false);
+                }
+            };
+
+            worker.addEventListener('message', handleMessage);
+
+            // Dispatch work to the Web Worker
+            worker.postMessage({
+                type: 'START_SYNC',
+                payload: {
+                    transactions: transactions,
+                    apiUrl: API_BASE,
+                    token: localStorage.getItem('auth_token') || ''
+                }
+            });
+        });
     };
 
     // =============================================
@@ -500,6 +543,19 @@ export default function useSync() {
         let capacitorListener = null;
 
         // ------------------------------------------
+        // INITIALIZE WEB WORKER (Phase 4)
+        // ------------------------------------------
+        try {
+            workerRef.current = new Worker(
+                new URL('../workers/sync.worker.js', import.meta.url)
+            );
+            console.log('✅ Sync Web Worker initialized');
+        } catch (workerErr) {
+            console.warn('⚠️ Web Worker init failed (will fallback to main thread):', workerErr.message);
+            workerRef.current = null;
+        }
+
+        // ------------------------------------------
         // LISTENER 1: Capacitor Network Plugin (Native)
         // ------------------------------------------
         // Menggunakan Capacitor Network plugin untuk deteksi
@@ -609,6 +665,13 @@ export default function useSync() {
             }
             if (periodicSyncRef.current) {
                 clearInterval(periodicSyncRef.current);
+            }
+
+            // Terminate Web Worker
+            if (workerRef.current) {
+                workerRef.current.terminate();
+                workerRef.current = null;
+                console.log('🧹 Sync Web Worker terminated');
             }
         };
     }, [syncNow, refreshPendingCount, fetchMasterData]);

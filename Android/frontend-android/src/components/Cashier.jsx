@@ -7,12 +7,123 @@ import toast from 'react-hot-toast';
 import api from '../services/api';
 import dbManager from '../utils/indexedDB';
 import ReceiptPreviewModal from './ReceiptPreviewModal';
+import useDebounce from '../hooks/useDebounce';
+import { Virtuoso, VirtuosoGrid } from 'react-virtuoso';
 
+// =============================================
+// FORMAT RUPIAH
+// =============================================
+const formatRupiah = (amount) => {
+    const number = parseFloat(amount) || 0;
+    return 'Rp. ' + Math.round(number).toLocaleString('id-ID');
+};
+
+// =============================================
+// EXTRACTED: MEMOIZED COMPONENTS (Phase 1)
+// =============================================
+const ProductCard = React.memo(({ item, qty, onAdd }) => {
+    const inCart = qty > 0;
+    return (
+        <div
+            onClick={() => onAdd(item)}
+            className="menu-card"
+            style={{
+                border: inCart ? '2px solid #2D5A3F' : '1px solid #e5e7eb',
+                borderRadius: '12px',
+                padding: '10px',
+                cursor: 'pointer',
+                background: inCart ? '#F0F7F2' : '#fafafa',
+                position: 'relative',
+            }}
+        >
+            {inCart && (
+                <div className="menu-card-badge" key={qty}>
+                    {qty}
+                </div>
+            )}
+            {item.image_url && (
+                <img
+                    src={item.image_url.startsWith('/') ? `${process.env.REACT_APP_API_URL || ""}${item.image_url}` : item.image_url}
+                    alt={item.name}
+                    loading="lazy"
+                    style={{ width: '100%', height: '80px', objectFit: 'cover', borderRadius: '8px', marginBottom: '8px', display: 'block' }}
+                />
+            )}
+            <p style={{ fontWeight: 700, fontSize: '13px', color: '#282828', marginBottom: '4px', lineHeight: 1.3 }}>{item.name}</p>
+            {item.is_discount_active && (item.discount_percent > 0 || item.discount_nominal > 0) ? (
+                <>
+                    <p style={{ fontWeight: 600, fontSize: '11px', color: '#aaa', textDecoration: 'line-through', marginBottom: '2px' }}>{formatRupiah(item.price)}</p>
+                    <p style={{ fontWeight: 800, fontSize: '13px', color: '#dc2626' }}>
+                        {formatRupiah(item.price - (item.discount_nominal > 0 ? parseFloat(item.discount_nominal) : item.price * parseFloat(item.discount_percent) / 100))} 
+                        <span style={{fontSize:'10px', background:'#fee2e2', padding:'2px 4px', borderRadius:'4px', marginLeft:'4px'}}>
+                            {item.discount_nominal > 0 ? `-Rp ${parseFloat(item.discount_nominal).toLocaleString('id-ID')}` : `-${parseFloat(item.discount_percent)}%`}
+                        </span>
+                    </p>
+                </>
+            ) : (
+                <p style={{ fontWeight: 800, fontSize: '13px', color: '#2D5A3F' }}>{formatRupiah(item.price)}</p>
+            )}
+        </div>
+    );
+});
+
+const CartItemRow = React.memo(({ item, isDesktop, onUpdateQty, onRemove }) => {
+    if (isDesktop) {
+        return (
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '1px solid #f1f5f9', padding: '8px 0' }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                    <p style={{ fontWeight: 600, fontSize: '13px', color: '#282828', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.name}</p>
+                    {item.options_label && <p style={{ fontSize: '11px', color: '#6b7280', fontStyle: 'italic', margin: '1px 0', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.options_label}</p>}
+                    <p style={{ fontSize: '12px', fontWeight: 700, color: '#2D5A3F' }}>{formatRupiah(item.price)}</p>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexShrink: 0 }}>
+                    <button style={{ width: '26px', height: '26px', background: '#f1f5f9', border: 'none', borderRadius: '6px', fontWeight: 700, cursor: 'pointer', fontSize: '14px' }} onClick={() => onUpdateQty(item.cartKey, item.quantity - 1)}>-</button>
+                    <span style={{ fontWeight: 700, fontSize: '13px', width: '20px', textAlign: 'center' }}>{item.quantity}</span>
+                    <button style={{ width: '26px', height: '26px', background: '#f1f5f9', border: 'none', borderRadius: '6px', fontWeight: 700, cursor: 'pointer', fontSize: '14px' }} onClick={() => onUpdateQty(item.cartKey, item.quantity + 1)}>+</button>
+                    <button style={{ background: 'none', border: 'none', cursor: 'pointer', marginLeft: '2px' }} onClick={() => onRemove(item.cartKey)}>🗑️</button>
+                </div>
+            </div>
+        );
+    }
+    return (
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '1px solid #f1f5f9', padding: '10px 0' }}>
+            <div style={{ flex: 1 }}>
+                <p style={{ fontWeight: 600, fontSize: '14px', color: '#282828' }}>{item.name}</p>
+                {item.options_label && <p style={{ fontSize: '11px', color: '#6b7280', fontStyle: 'italic', margin: '2px 0' }}>{item.options_label}</p>}
+                <p style={{ fontSize: '13px', fontWeight: 700, color: '#2D5A3F' }}>{formatRupiah(item.price)}</p>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <button style={{ width: '28px', height: '28px', background: '#f1f5f9', border: 'none', borderRadius: '6px', fontWeight: 700, cursor: 'pointer' }} onClick={() => onUpdateQty(item.cartKey, item.quantity - 1)}>-</button>
+                <span style={{ fontWeight: 700, width: '24px', textAlign: 'center' }}>{item.quantity}</span>
+                <button style={{ width: '28px', height: '28px', background: '#f1f5f9', border: 'none', borderRadius: '6px', fontWeight: 700, cursor: 'pointer' }} onClick={() => onUpdateQty(item.cartKey, item.quantity + 1)}>+</button>
+                <button style={{ marginLeft: '4px', background: 'none', border: 'none', cursor: 'pointer', fontSize: '16px' }} onClick={() => onRemove(item.cartKey)}>🗑️</button>
+            </div>
+        </div>
+    );
+});
+
+const GridList = React.forwardRef(({ style, children, ...props }, ref) => (
+    <div
+        ref={ref}
+        {...props}
+        style={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(auto-fill, minmax(130px, 1fr))',
+            gap: '10px',
+            ...style,
+        }}
+    >
+        {children}
+    </div>
+));
+
+const GridItem = ({ children, ...props }) => <div {...props}>{children}</div>;
 
 const Cashier = ({ isOnline, onSyncUpdate, syncVersion = 0 }) => {
     const [menuItems, setMenuItems] = useState([]);
     const [cart, setCart] = useState([]);
     const [searchQuery, setSearchQuery] = useState('');
+    const debouncedSearchQuery = useDebounce(searchQuery, 300);
     const [selectedCategory, setSelectedCategory] = useState('all');
     const [paymentMethod, setPaymentMethod] = useState('cash');
     const [customerName, setCustomerName] = useState('');
@@ -70,18 +181,48 @@ const Cashier = ({ isOnline, onSyncUpdate, syncVersion = 0 }) => {
     }, [syncVersion]); // eslint-disable-line react-hooks/exhaustive-deps
 
     // =============================================
-    // FORMAT RUPIAH
-    // =============================================
-    const formatRupiah = (amount) => {
-        const number = parseFloat(amount) || 0;
-        return 'Rp. ' + Math.round(number).toLocaleString('id-ID');
-    };
-
-    // =============================================
     // CART OPERATIONS
     // =============================================
+    const addItemDirectly = useCallback((item, selectedOptions) => {
+        setCart(prevCart => {
+            const optionsKey = Object.entries(selectedOptions).sort().map(([k,v]) => `${k}:${v}`).join('|');
+            const cartKey = `${item.id}__${optionsKey}`;
+
+            let actualPrice = item.price;
+            let discountAmount = 0;
+            if (item.is_discount_active) {
+                if (item.discount_nominal > 0) {
+                    discountAmount = parseFloat(item.discount_nominal);
+                    actualPrice = item.price - discountAmount;
+                } else if (item.discount_percent > 0) {
+                    discountAmount = item.price * (item.discount_percent / 100);
+                    actualPrice = item.price - discountAmount;
+                }
+            }
+
+            const existingIndex = prevCart.findIndex(c => c.cartKey === cartKey);
+
+            if (existingIndex >= 0) {
+                const newCart = [...prevCart];
+                newCart[existingIndex] = { ...newCart[existingIndex], quantity: newCart[existingIndex].quantity + 1 };
+                return newCart;
+            } else {
+                const optionsLabel = Object.values(selectedOptions).filter(v => v).join(', ');
+                return [...prevCart, {
+                    ...item,
+                    cartKey,
+                    quantity: 1,
+                    original_price: item.price,
+                    price: actualPrice,
+                    discount_amount: discountAmount,
+                    selected_options: selectedOptions,
+                    options_label: optionsLabel,
+                }];
+            }
+        });
+    }, []);
+
     const addToCart = useCallback((item) => {
-        // Jika item punya opsi, tampilkan dialog pilihan
         const itemOptions = item.options || [];
         const activeOptions = itemOptions
             .filter(og => og.choices && og.choices.filter(c => c).length > 0)
@@ -95,73 +236,34 @@ const Cashier = ({ isOnline, onSyncUpdate, syncVersion = 0 }) => {
         }
 
         addItemDirectly(item, {});
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [cart]);
+    }, [addItemDirectly]);
 
-    const addItemDirectly = (item, selectedOptions) => {
-        // Buat unique key berdasarkan id + opsi yang dipilih
-        const optionsKey = Object.entries(selectedOptions).sort().map(([k,v]) => `${k}:${v}`).join('|');
-        const cartKey = `${item.id}__${optionsKey}`;
-
-        let actualPrice = item.price;
-        let discountAmount = 0;
-        if (item.is_discount_active) {
-            if (item.discount_nominal > 0) {
-                discountAmount = parseFloat(item.discount_nominal);
-                actualPrice = item.price - discountAmount;
-            } else if (item.discount_percent > 0) {
-                discountAmount = item.price * (item.discount_percent / 100);
-                actualPrice = item.price - discountAmount;
-            }
-        }
-
-        const existingIndex = cart.findIndex(c => c.cartKey === cartKey);
-
-        if (existingIndex >= 0) {
-            const newCart = [...cart];
-            newCart[existingIndex].quantity += 1;
-            setCart(newCart);
-        } else {
-            const optionsLabel = Object.values(selectedOptions).filter(v => v).join(', ');
-            setCart([...cart, {
-                ...item,
-                cartKey,
-                quantity: 1,
-                original_price: item.price,
-                price: actualPrice,
-                discount_amount: discountAmount,
-                selected_options: selectedOptions,
-                options_label: optionsLabel,
-            }]);
-        }
-    };
-
-    const handleConfirmOptions = () => {
+    const handleConfirmOptions = useCallback(() => {
         if (!optionsDialog) return;
         addItemDirectly(optionsDialog.item, optionsDialog.selectedOptions);
         setOptionsDialog(null);
-    };
+    }, [optionsDialog, addItemDirectly]);
 
-    const updateQuantity = (cartKey, newQuantity) => {
-        if (newQuantity <= 0) {
-            removeFromCart(cartKey);
-            return;
-        }
+    const updateQuantity = useCallback((cartKey, newQuantity) => {
+        setCart(prevCart => {
+            if (newQuantity <= 0) {
+                return prevCart.filter(item => item.cartKey !== cartKey);
+            }
+            return prevCart.map(item =>
+                item.cartKey === cartKey ? { ...item, quantity: newQuantity } : item
+            );
+        });
+    }, []);
 
-        setCart(cart.map(item =>
-            item.cartKey === cartKey ? { ...item, quantity: newQuantity } : item
-        ));
-    };
+    const removeFromCart = useCallback((cartKey) => {
+        setCart(prevCart => prevCart.filter(item => item.cartKey !== cartKey));
+    }, []);
 
-    const removeFromCart = (cartKey) => {
-        setCart(cart.filter(item => item.cartKey !== cartKey));
-    };
-
-    const clearCart = () => {
+    const clearCart = useCallback(() => {
         setCart([]);
         setCustomerName('');
         setCustomerPhone('');
-    };
+    }, []);
 
     // =============================================
     // CALCULATE TOTAL
@@ -275,7 +377,7 @@ const Cashier = ({ isOnline, onSyncUpdate, syncVersion = 0 }) => {
     // FILTER MENU
     // =============================================
     const filteredMenu = menuItems.filter(item => {
-        const matchSearch = item.name.toLowerCase().includes(searchQuery.toLowerCase());
+        const matchSearch = item.name.toLowerCase().includes(debouncedSearchQuery.toLowerCase());
         const matchCategory = selectedCategory === 'all' || item.category === selectedCategory;
         return matchSearch && matchCategory;
     });
@@ -341,6 +443,7 @@ const Cashier = ({ isOnline, onSyncUpdate, syncVersion = 0 }) => {
                 maxHeight: '100%', overflowY: 'auto',
                 transform: showMobileCart ? 'translateY(0)' : 'translateY(100%)',
                 transition: 'transform 0.3s cubic-bezier(.4,0,.2,1)',
+                willChange: 'transform',
                 padding: '0 16px 80px',
             }} className="mobile-cart-sheet">
                 {/* Handle + close */}
@@ -352,21 +455,22 @@ const Cashier = ({ isOnline, onSyncUpdate, syncVersion = 0 }) => {
                     </div>
                 </div>
                 {/* Cart content (same as desktop, repeated for mobile sheet) */}
-                {cart.map(item => (
-                    <div key={item.cartKey} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '1px solid #f1f5f9', padding: '10px 0' }}>
-                        <div style={{ flex: 1 }}>
-                            <p style={{ fontWeight: 600, fontSize: '14px', color: '#282828' }}>{item.name}</p>
-                            {item.options_label && <p style={{ fontSize: '11px', color: '#6b7280', fontStyle: 'italic', margin: '2px 0' }}>{item.options_label}</p>}
-                            <p style={{ fontSize: '13px', fontWeight: 700, color: '#2D5A3F' }}>{formatRupiah(item.price)}</p>
-                        </div>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                            <button style={{ width: '28px', height: '28px', background: '#f1f5f9', border: 'none', borderRadius: '6px', fontWeight: 700, cursor: 'pointer' }} onClick={() => updateQuantity(item.cartKey, item.quantity - 1)}>-</button>
-                            <span style={{ fontWeight: 700, width: '24px', textAlign: 'center' }}>{item.quantity}</span>
-                            <button style={{ width: '28px', height: '28px', background: '#f1f5f9', border: 'none', borderRadius: '6px', fontWeight: 700, cursor: 'pointer' }} onClick={() => updateQuantity(item.cartKey, item.quantity + 1)}>+</button>
-                            <button style={{ marginLeft: '4px', background: 'none', border: 'none', cursor: 'pointer', fontSize: '16px' }} onClick={() => removeFromCart(item.cartKey)}>🗑️</button>
-                        </div>
+                {cart.length > 0 && (
+                    <div style={{ height: '50vh', minHeight: '300px' }}>
+                        <Virtuoso
+                            style={{ height: '100%' }}
+                            data={cart}
+                            itemContent={(index, item) => (
+                                <CartItemRow 
+                                    item={item} 
+                                    isDesktop={false} 
+                                    onUpdateQty={updateQuantity} 
+                                    onRemove={removeFromCart} 
+                                />
+                            )}
+                        />
                     </div>
-                ))}
+                )}
                 {/* Customer + Payment + Checkout */}
                 <div style={{ marginTop: '16px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
                     <input type="text" placeholder="Nama Pelanggan (Opsional)" style={{ width: '100%', padding: '12px 14px', background: '#282828', color: '#fff', border: 'none', borderRadius: '10px', fontSize: '14px', outline: 'none' }} value={customerName} onChange={e => setCustomerName(e.target.value)} />
@@ -428,61 +532,27 @@ const Cashier = ({ isOnline, onSyncUpdate, syncVersion = 0 }) => {
                         ))}
                     </div>
 
-                    {/* Menu grid — auto-fill */}
-                    <div style={{
-                        display: 'grid',
-                        gridTemplateColumns: 'repeat(auto-fill, minmax(130px, 1fr))',
-                        gap: '10px',
-                    }}>
-                        {filteredMenu.map(item => {
+                    {/* Menu grid — virtualized */}
+                    <VirtuosoGrid
+                        useWindowScroll
+                        totalCount={filteredMenu.length}
+                        components={{
+                            List: GridList,
+                            Item: GridItem
+                        }}
+                        itemContent={(index) => {
+                            const item = filteredMenu[index];
+                            if (!item) return null;
                             const qty = cartQuantityMap[item.id] || 0;
-                            const inCart = qty > 0;
                             return (
-                                <div
-                                    key={item.id}
-                                    onClick={() => addToCart(item)}
-                                    className="menu-card"
-                                    style={{
-                                        border: inCart ? '2px solid #2D5A3F' : '1px solid #e5e7eb',
-                                        borderRadius: '12px',
-                                        padding: '10px',
-                                        cursor: 'pointer',
-                                        background: inCart ? '#F0F7F2' : '#fafafa',
-                                        position: 'relative',
-                                    }}
-                                >
-                                    {/* FIX 3: Quantity badge */}
-                                    {inCart && (
-                                        <div className="menu-card-badge" key={qty}>
-                                            {qty}
-                                        </div>
-                                    )}
-                                    {item.image_url && (
-                                        <img
-                                            src={item.image_url.startsWith('/') ? `${process.env.REACT_APP_API_URL || ""}${item.image_url}` : item.image_url}
-                                            alt={item.name}
-                                            loading="lazy"
-                                            style={{ width: '100%', height: '80px', objectFit: 'cover', borderRadius: '8px', marginBottom: '8px', display: 'block' }}
-                                        />
-                                    )}
-                                    <p style={{ fontWeight: 700, fontSize: '13px', color: '#282828', marginBottom: '4px', lineHeight: 1.3 }}>{item.name}</p>
-                                    {item.is_discount_active && (item.discount_percent > 0 || item.discount_nominal > 0) ? (
-                                        <>
-                                            <p style={{ fontWeight: 600, fontSize: '11px', color: '#aaa', textDecoration: 'line-through', marginBottom: '2px' }}>{formatRupiah(item.price)}</p>
-                                            <p style={{ fontWeight: 800, fontSize: '13px', color: '#dc2626' }}>
-                                                {formatRupiah(item.price - (item.discount_nominal > 0 ? parseFloat(item.discount_nominal) : item.price * parseFloat(item.discount_percent) / 100))} 
-                                                <span style={{fontSize:'10px', background:'#fee2e2', padding:'2px 4px', borderRadius:'4px', marginLeft:'4px'}}>
-                                                    {item.discount_nominal > 0 ? `-Rp ${parseFloat(item.discount_nominal).toLocaleString('id-ID')}` : `-${parseFloat(item.discount_percent)}%`}
-                                                </span>
-                                            </p>
-                                        </>
-                                    ) : (
-                                        <p style={{ fontWeight: 800, fontSize: '13px', color: '#2D5A3F' }}>{formatRupiah(item.price)}</p>
-                                    )}
-                                </div>
+                                <ProductCard 
+                                    item={item} 
+                                    qty={qty} 
+                                    onAdd={addToCart} 
+                                />
                             );
-                        })}
-                    </div>
+                        }}
+                    />
 
                     {filteredMenu.length === 0 && (
                         <div style={{ textAlign: 'center', padding: '48px', color: '#9ca3af' }}>Tidak ada menu ditemukan</div>
@@ -493,23 +563,23 @@ const Cashier = ({ isOnline, onSyncUpdate, syncVersion = 0 }) => {
                 <div style={{ background: '#fff', borderRadius: '16px', boxShadow: '0 2px 12px rgba(0,0,0,0.06)', border: '1px solid #e5e7eb', padding: '16px', position: 'sticky', top: '16px' }} className="desktop-cart">
                     <h2 style={{ fontSize: '20px', fontWeight: 800, color: '#282828', marginBottom: '14px' }}>Keranjang</h2>
 
-                    <div style={{ maxHeight: '240px', overflowY: 'auto', marginBottom: '12px' }}>
-                        {cart.map(item => (
-                            <div key={item.cartKey} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '1px solid #f1f5f9', padding: '8px 0' }}>
-                                <div style={{ flex: 1, minWidth: 0 }}>
-                                    <p style={{ fontWeight: 600, fontSize: '13px', color: '#282828', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.name}</p>
-                                    {item.options_label && <p style={{ fontSize: '11px', color: '#6b7280', fontStyle: 'italic', margin: '1px 0', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.options_label}</p>}
-                                    <p style={{ fontSize: '12px', fontWeight: 700, color: '#2D5A3F' }}>{formatRupiah(item.price)}</p>
-                                </div>
-                                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexShrink: 0 }}>
-                                    <button style={{ width: '26px', height: '26px', background: '#f1f5f9', border: 'none', borderRadius: '6px', fontWeight: 700, cursor: 'pointer', fontSize: '14px' }} onClick={() => updateQuantity(item.cartKey, item.quantity - 1)}>-</button>
-                                    <span style={{ fontWeight: 700, fontSize: '13px', width: '20px', textAlign: 'center' }}>{item.quantity}</span>
-                                    <button style={{ width: '26px', height: '26px', background: '#f1f5f9', border: 'none', borderRadius: '6px', fontWeight: 700, cursor: 'pointer', fontSize: '14px' }} onClick={() => updateQuantity(item.cartKey, item.quantity + 1)}>+</button>
-                                    <button style={{ background: 'none', border: 'none', cursor: 'pointer', marginLeft: '2px' }} onClick={() => removeFromCart(item.cartKey)}>🗑️</button>
-                                </div>
-                            </div>
-                        ))}
-                        {cart.length === 0 && <p style={{ textAlign: 'center', color: '#9ca3af', padding: '32px 0', fontSize: '14px' }}>Keranjang kosong</p>}
+                    <div style={{ height: '240px', marginBottom: '12px' }}>
+                        {cart.length > 0 ? (
+                            <Virtuoso
+                                style={{ height: '100%' }}
+                                data={cart}
+                                itemContent={(index, item) => (
+                                    <CartItemRow 
+                                        item={item} 
+                                        isDesktop={true} 
+                                        onUpdateQty={updateQuantity} 
+                                        onRemove={removeFromCart} 
+                                    />
+                                )}
+                            />
+                        ) : (
+                            <p style={{ textAlign: 'center', color: '#9ca3af', padding: '32px 0', fontSize: '14px' }}>Keranjang kosong</p>
+                        )}
                     </div>
 
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
