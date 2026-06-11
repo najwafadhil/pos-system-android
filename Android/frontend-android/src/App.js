@@ -9,6 +9,7 @@
 // =============================================
 
 import React, { useEffect, useState, useCallback, Suspense } from 'react';
+import { Toaster } from 'react-hot-toast';
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import dbManager from './utils/indexedDB';
 
@@ -191,6 +192,29 @@ export default function App() {
   return (
     <Router>
       <div className='app-shell' style={{ background: '#F7F3EB' }}>
+        {/* Global Toast Notification Provider */}
+        <Toaster
+          position="top-center"
+          reverseOrder={false}
+          toastOptions={{
+            duration: 3000,
+            style: {
+              borderRadius: '12px',
+              background: '#282828',
+              color: '#fff',
+              fontSize: '14px',
+              fontWeight: 600,
+              padding: '12px 20px',
+              boxShadow: '0 8px 30px rgba(0,0,0,0.15)',
+            },
+            success: {
+              iconTheme: { primary: '#2D5A3F', secondary: '#fff' },
+            },
+            error: {
+              iconTheme: { primary: '#dc2626', secondary: '#fff' },
+            },
+          }}
+        />
         {isAuthenticated && <Navigation user={user} onLogout={handleLogout} />}
         <div className='app-content-wrapper'>
           <OfflineIndicator

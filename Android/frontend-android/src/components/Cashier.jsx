@@ -3,6 +3,8 @@
 // =============================================
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { v4 as uuidv4 } from 'uuid';
+import toast from 'react-hot-toast';
+import api from '../services/api';
 import dbManager from '../utils/indexedDB';
 import ReceiptPreviewModal from './ReceiptPreviewModal';
 
@@ -26,9 +28,8 @@ const Cashier = ({ isOnline, onSyncUpdate, syncVersion = 0 }) => {
         try {
             if (isOnline) {
                 // ONLINE: Selalu ambil dari server untuk data terbaru
-                const url = `${process.env.REACT_APP_API_URL || ""}/api/menu?available=true&t=${new Date().getTime()}`;
-                const response = await fetch(url, { headers: { Authorization: `Bearer ${localStorage.getItem('auth_token')}` } });
-                const data = await response.json();
+                const response = await api.get(`/api/menu?available=true&t=${new Date().getTime()}`);
+                const data = response.data;
 
                 if (data.success) {
                     setMenuItems(data.data || []);
@@ -174,7 +175,7 @@ const Cashier = ({ isOnline, onSyncUpdate, syncVersion = 0 }) => {
     // =============================================
     const processTransaction = async () => {
         if (cart.length === 0) {
-            alert('Keranjang masih kosong!');
+            toast.error('Keranjang masih kosong!');
             return;
         }
 
@@ -216,41 +217,27 @@ const Cashier = ({ isOnline, onSyncUpdate, syncVersion = 0 }) => {
             if (isOnline) {
                 // ONLINE: Coba kirim ke server
                 try {
-                    const response = await fetch(`${process.env.REACT_APP_API_URL || ""}/api/transactions`, {
-                        method: 'POST',
-                        headers: { 
-                            'Content-Type': 'application/json',
-                            'Authorization': `Bearer ${localStorage.getItem('auth_token')}` 
-                        },
-                        body: JSON.stringify(transactionData)
-                    });
+                    const response = await api.post('/api/transactions', transactionData);
+                    const result = response.data;
 
-                    const contentType = response.headers.get('content-type');
-                    if (response.ok) {
-                        if (contentType && contentType.includes('application/json')) {
-                            const result = await response.json();
-                            if (result.success) {
-                                savedOnline = true;
-                            }
-                        } else {
-                            savedOnline = true; // Anggap sukses walau 2xx non-json
+                    if (result.success !== undefined) {
+                        // JSON response with success field
+                        if (result.success) {
+                            savedOnline = true;
                         }
                     } else {
-                        // JIKA SERVER MENOLAK (4xx/5xx), Lempar error agar TIDAK masuk ke antrian offline!
-                        let errMsg = `Server error: ${response.status}`;
-                        if (contentType && contentType.includes('application/json')) {
-                            const errData = await response.json();
-                            errMsg = errData.message || errMsg;
-                        }
-                        throw new Error(errMsg);
+                        // 2xx response without explicit success field — treat as success
+                        savedOnline = true;
                     }
                 } catch (networkErr) {
-                    // Cek apakah murni kegagalan koneksi (Server down / Failed to fetch)
-                    if (networkErr.message.includes('Failed to fetch') || networkErr.name === 'TypeError') {
+                    // Cek apakah murni kegagalan koneksi (Server down / network error)
+                    if (!networkErr.response) {
+                        // No response at all → network failure, fallback to offline
                         console.warn('⚠️ Server tidak dapat dijangkau, fallback ke offline:', networkErr.message);
                     } else {
-                        // Jika ini error penolakan server (seperti 400 Bad Request / 500), lemparkan!
-                        throw networkErr;
+                        // Server responded with 4xx/5xx → throw to prevent offline queue
+                        const errMsg = networkErr.response.data?.message || `Server error: ${networkErr.response.status}`;
+                        throw new Error(errMsg);
                     }
                 }
             }
@@ -277,7 +264,7 @@ const Cashier = ({ isOnline, onSyncUpdate, syncVersion = 0 }) => {
             });
         } catch (error) {
             console.error('Transaction error:', error);
-            alert('❌ Gagal memproses transaksi: ' + error.message);
+            toast.error('Gagal memproses transaksi: ' + error.message);
         } finally {
             setIsProcessing(false);
         }
