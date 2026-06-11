@@ -437,27 +437,29 @@ const generatePlainTextReceipt = async (transaction, transactionCode) => {
 };
 
 // =============================================
-// NATIVE PRINT: Print via Custom Dantsu Native Plugin
+// NATIVE PRINT: Print via Custom Dantsu Native Plugin (Image Raster Mode)
 // =============================================
 const printViaCapacitorBluetooth = async (transaction, transactionCode, macAddress) => {
     try {
-        const text = await generateReceiptText(transaction, transactionCode);
-        
-        // Paper width from settings (default 58mm for EP58M printers)
-        const paperWidth = parseInt(localStorage.getItem('printer_paper_width') || '58', 10);
-        
-        // Logo is loaded natively from R.drawable.logo — no base64 needed.
-        // This avoids Capacitor Bridge latency and OOM risks during continuous printing.
-        const result = await EscPosPrinterPlugin.printReceipt({
-            macAddress: macAddress,
-            text: text,
-            paperWidth: paperWidth
+        // Generate base64 image struk menggunakan html2canvas fallback yang sudah ada
+        let base64Image;
+        try {
+            base64Image = await generateImageViaHtml2Canvas(transaction, transactionCode);
+        } catch (imgError) {
+            console.error('Gagal generate base64 gambar untuk bluetooth print:', imgError);
+            throw new Error('Gagal menggenerate gambar struk.');
+        }
+
+        // Panggil plugin native dengan method printImage yang baru
+        const result = await EscPosPrinterPlugin.printImage({
+            macAddress: macAddress || "",
+            base64Image: base64Image
         });
         
         if (!result.success) {
             throw new Error('Plugin returned unsuccessful print status');
         }
-        console.log('Successfully printed natively via Dantsu ESC/POS');
+        console.log('Successfully printed natively via Bluetooth Image Raster');
     } catch (error) {
         console.error('Native print error:', error);
         throw error;
