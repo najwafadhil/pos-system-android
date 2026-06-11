@@ -2,6 +2,7 @@ package com.possystem.app;
 
 import android.Manifest;
 import android.annotation.SuppressLint;
+import android.bluetooth.BluetoothAdapter;
 import android.content.pm.PackageManager;
 import android.content.res.Resources;
 import android.graphics.Bitmap;
@@ -466,6 +467,86 @@ public class EscPosPrinterPlugin extends Plugin {
         // Android 11 and below
         return ActivityCompat.checkSelfPermission(getContext(), Manifest.permission.BLUETOOTH) == PackageManager.PERMISSION_GRANTED
             && ActivityCompat.checkSelfPermission(getContext(), Manifest.permission.BLUETOOTH_ADMIN) == PackageManager.PERMISSION_GRANTED;
+    }
+
+    // =============================================
+    // CHECK CONNECTION: Probe BT readiness (no print)
+    // =============================================
+    @SuppressLint("MissingPermission")
+    @PluginMethod
+    public void checkConnection(PluginCall call) {
+        new Thread(() -> {
+            try {
+                // 1. Check Bluetooth permissions
+                if (!hasBluetoothPermissions()) {
+                    JSObject ret = new JSObject();
+                    ret.put("isConnected", false);
+                    ret.put("message", "Izin Bluetooth belum diberikan. Aktifkan di pengaturan aplikasi.");
+                    ret.put("printerName", JSObject.NULL);
+                    call.resolve(ret);
+                    return;
+                }
+
+                // 2. Check if Bluetooth adapter is enabled
+                BluetoothAdapter bluetoothAdapter = BluetoothAdapter.getDefaultAdapter();
+                if (bluetoothAdapter == null || !bluetoothAdapter.isEnabled()) {
+                    JSObject ret = new JSObject();
+                    ret.put("isConnected", false);
+                    ret.put("message", "Bluetooth tidak aktif. Nyalakan Bluetooth terlebih dahulu.");
+                    ret.put("printerName", JSObject.NULL);
+                    call.resolve(ret);
+                    return;
+                }
+
+                // 3. Check for paired printers
+                BluetoothConnection[] printers = new BluetoothPrintersConnections().getList();
+                if (printers == null || printers.length == 0) {
+                    JSObject ret = new JSObject();
+                    ret.put("isConnected", false);
+                    ret.put("message", "Tidak ada printer Bluetooth yang dipasangkan (paired).");
+                    ret.put("printerName", JSObject.NULL);
+                    call.resolve(ret);
+                    return;
+                }
+
+                // 4. Found at least one paired printer — check for specific MAC if saved
+                String savedMac = call.getString("macAddress", "");
+                BluetoothConnection targetPrinter = null;
+
+                if (savedMac != null && !savedMac.isEmpty()) {
+                    for (BluetoothConnection printer : printers) {
+                        if (printer.getDevice().getAddress().equalsIgnoreCase(savedMac)) {
+                            targetPrinter = printer;
+                            break;
+                        }
+                    }
+                }
+
+                // Fallback to first available printer if no MAC match
+                if (targetPrinter == null) {
+                    targetPrinter = printers[0];
+                }
+
+                String printerName = targetPrinter.getDevice().getName();
+                if (printerName == null || printerName.isEmpty()) {
+                    printerName = "Printer (" + targetPrinter.getDevice().getAddress() + ")";
+                }
+
+                JSObject ret = new JSObject();
+                ret.put("isConnected", true);
+                ret.put("message", "Printer siap digunakan.");
+                ret.put("printerName", printerName);
+                call.resolve(ret);
+
+            } catch (Exception e) {
+                Log.e(TAG, "Error checking Bluetooth connection", e);
+                JSObject ret = new JSObject();
+                ret.put("isConnected", false);
+                ret.put("message", "Gagal mengecek koneksi: " + e.getMessage());
+                ret.put("printerName", JSObject.NULL);
+                call.resolve(ret);
+            }
+        }).start();
     }
 
     // =============================================

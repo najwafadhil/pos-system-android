@@ -4,7 +4,7 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { v4 as uuidv4 } from 'uuid';
 import dbManager from '../utils/indexedDB';
-import { printReceipt } from '../utils/printer';
+import ReceiptPreviewModal from './ReceiptPreviewModal';
 
 
 const Cashier = ({ isOnline, onSyncUpdate, syncVersion = 0 }) => {
@@ -17,6 +17,7 @@ const Cashier = ({ isOnline, onSyncUpdate, syncVersion = 0 }) => {
     const [customerPhone, setCustomerPhone] = useState('');
     const [isProcessing, setIsProcessing] = useState(false);
     const [optionsDialog, setOptionsDialog] = useState(null); // {item, selectedOptions: {groupName: choice}}
+    const [receiptModal, setReceiptModal] = useState({ isOpen: false, transaction: null, transactionCode: '', isOffline: false });
 
     // =============================================
     // LOAD MENU (Offline-First)
@@ -261,26 +262,19 @@ const Cashier = ({ isOnline, onSyncUpdate, syncVersion = 0 }) => {
             }
 
             // =============================================
-            // PENTING: Clear cart dan beri feedback SEBELUM print!
-            // =============================================
-            // Ini mencegah masalah dimana user stuck di halaman struk
-            // karena printReceipt() gagal atau membuka app lain.
-            // Transaksi sudah tersimpan, jadi cart aman untuk dibersihkan.
+            // Clear cart, lalu buka modal pratinjau struk.
+            // Transaksi sudah tersimpan — cart aman dibersihkan.
             // =============================================
             clearCart();
-            setIsProcessing(false); // Reset UI SEBELUM print agar tidak stuck "Memproses..."
-            alert(savedOnline 
-                ? '✅ Transaksi berhasil!' 
-                : '⚠️ Transaksi disimpan offline. Akan disinkronkan otomatis saat online.');
+            setIsProcessing(false);
 
-            // Print receipt — dalam try-catch terpisah agar kegagalan
-            // print TIDAK menghalangi penyelesaian transaksi
-            try {
-                await printReceipt(transactionData, transactionCode);
-            } catch (printError) {
-                console.error('Print failed (transaksi sudah tersimpan):', printError);
-                // Tidak perlu alert tambahan, printReceipt sudah handle error-nya sendiri
-            }
+            // Buka ReceiptPreviewModal (menggantikan alert + auto-print)
+            setReceiptModal({
+                isOpen: true,
+                transaction: transactionData,
+                transactionCode: transactionCode,
+                isOffline: !savedOnline
+            });
         } catch (error) {
             console.error('Transaction error:', error);
             alert('❌ Gagal memproses transaksi: ' + error.message);
@@ -548,6 +542,15 @@ const Cashier = ({ isOnline, onSyncUpdate, syncVersion = 0 }) => {
             </div>
 
             {/* ===== OPTIONS SELECTION DIALOG ===== */}
+            {/* ===== RECEIPT PREVIEW MODAL ===== */}
+            <ReceiptPreviewModal
+                isOpen={receiptModal.isOpen}
+                onClose={() => setReceiptModal({ isOpen: false, transaction: null, transactionCode: '', isOffline: false })}
+                transaction={receiptModal.transaction}
+                transactionCode={receiptModal.transactionCode}
+                isOffline={receiptModal.isOffline}
+            />
+
             {optionsDialog && (
                 <>
                     <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', zIndex: 100 }} onClick={() => setOptionsDialog(null)} />

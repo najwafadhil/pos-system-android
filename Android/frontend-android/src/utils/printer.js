@@ -732,3 +732,131 @@ const printThermalHTML = async (transaction, transactionCode) => {
         }, 500);
     });
 };
+
+// =============================================
+// PUBLIC API: Modular functions for ReceiptPreviewModal
+// =============================================
+
+/**
+ * Generate structured receipt data for rendering in the ReceiptPreviewModal.
+ * Returns the same data structure used by shareReceiptAsImage so the preview
+ * matches the shared receipt image exactly.
+ */
+export const generateReceiptData = async (transaction, transactionCode) => {
+    const appName = (await dbManager.getGlobalSetting('app_name')) || 'Warung Nasi Rames Bu Rofi';
+    const appLogo = (await dbManager.getGlobalSetting('app_logo')) || '';
+    const kasirData = localStorage.getItem('user_data');
+    const kasirName = kasirData ? JSON.parse(kasirData).full_name || JSON.parse(kasirData).username : '-';
+
+    // Resolve logo: try IndexedDB first, then fetch /Logo.jpeg (same as printThermalHTML)
+    let logoSrc = '';
+    if (appLogo) {
+        logoSrc = appLogo;
+    } else {
+        try {
+            const logoUrl = (typeof process !== 'undefined' && process.env && process.env.PUBLIC_URL)
+                ? process.env.PUBLIC_URL + '/Logo.jpeg'
+                : '/Logo.jpeg';
+            const resp = await fetch(logoUrl);
+            if (resp.ok) {
+                const blob = await resp.blob();
+                logoSrc = await new Promise((resolve) => {
+                    const reader = new FileReader();
+                    reader.onloadend = () => resolve(reader.result);
+                    reader.onerror = () => resolve('');
+                    reader.readAsDataURL(blob);
+                });
+            }
+        } catch (e) {
+            console.warn('Logo fetch failed:', e);
+            logoSrc = '';
+        }
+    }
+
+    const now = new Date();
+    const timestamp = now.toLocaleString('id-ID', {
+        day: '2-digit', month: '2-digit', year: 'numeric',
+        hour: '2-digit', minute: '2-digit'
+    });
+
+    const items = (transaction.items || []).filter(i => i && i.item_name);
+    const total = parseFloat(transaction.total_amount || 0);
+
+    return {
+        appName,
+        storeAddress: STORE_ADDRESS,
+        logoSrc,
+        timestamp,
+        cashierName: kasirName,
+        transactionCode,
+        customerName: transaction.customer_name || '',
+        total: 'Rp ' + Math.round(total).toLocaleString('id-ID'),
+        paymentMethod: (transaction.payment_method || 'cash').toUpperCase(),
+        items: items.map(item => ({
+            name: item.item_name,
+            qtyPrice: `${item.quantity}x @${Math.round(parseFloat(item.unit_price || 0)).toLocaleString('id-ID')}`,
+            subtotal: Math.round(parseFloat(item.subtotal || 0)).toLocaleString('id-ID'),
+            originalPrice: item.discount_amount > 0
+                ? `Normal Rp${Math.round(parseFloat(item.original_price || 0)).toLocaleString('id-ID')}`
+                : '',
+            discount: item.discount_amount > 0
+                ? `Disc: -Rp${Math.round(parseFloat(item.discount_amount || 0)).toLocaleString('id-ID')}`
+                : ''
+        }))
+    };
+};
+
+/**
+ * Check Bluetooth printer connection status via native plugin.
+ * Returns { isConnected: boolean, message: string, printerName: string|null }
+ * On non-native platforms, returns a graceful "not supported" response.
+ */
+export const checkPrinterStatus = async () => {
+    if (!Capacitor.isNativePlatform()) {
+        return {
+            isConnected: false,
+            message: 'Bluetooth printing hanya tersedia di aplikasi Android.',
+            printerName: null
+        };
+    }
+
+    try {
+        const btMac = localStorage.getItem('bt_printer_mac') || '';
+        const result = await EscPosPrinterPlugin.checkConnection({ macAddress: btMac });
+        return {
+            isConnected: result.isConnected || false,
+            message: result.message || 'Status tidak diketahui.',
+            printerName: result.printerName || null
+        };
+    } catch (error) {
+        console.error('checkPrinterStatus error:', error);
+        return {
+            isConnected: false,
+            message: 'Gagal mengecek koneksi printer: ' + (error.message || error),
+            printerName: null
+        };
+    }
+};
+
+/**
+ * Execute direct Bluetooth print via the native ESC/POS plugin.
+ * Throws an error if printing fails (caller should handle).
+ */
+export const executeDirectPrint = async (transaction, transactionCode) => {
+    const btMac = localStorage.getItem('bt_printer_mac') || '';
+    await printViaCapacitorBluetooth(transaction, transactionCode, btMac);
+};
+
+/**
+ * Execute receipt sharing via Capacitor Share (image first, text fallback).
+ * Throws an error if all share methods fail (caller should handle).
+ */
+export const executeShare = async (transaction, transactionCode) => {
+    try {
+        await shareReceiptAsImage(transaction, transactionCode);
+    } catch (shareError) {
+        console.error('Share Image failed, trying text:', shareError);
+        // Fallback: share as plain text
+        await shareReceiptAsText(transaction, transactionCode);
+    }
+};
