@@ -57,6 +57,12 @@ export default function Navigation({ user, onLogout }) {
   const [collapsed, setCollapsed] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
 
+  useEffect(() => {
+    const handleCloseSidebar = () => setMobileOpen(false);
+    window.addEventListener('close-sidebar', handleCloseSidebar);
+    return () => window.removeEventListener('close-sidebar', handleCloseSidebar);
+  }, []);
+
   // Load settings from IndexedDB and listen for changes
   useEffect(() => {
     const loadFromDB = async () => {
@@ -204,7 +210,10 @@ export default function Navigation({ user, onLogout }) {
       {/* ===== MOBILE TOPBAR ===== */}
       <div className="mobile-topbar" style={{ display: 'none' }}>
         <LogoArea />
-        <button onClick={() => setMobileOpen(true)} style={{ background: 'rgba(255,255,255,0.1)', border: 'none', color: '#fff', padding: '8px', borderRadius: '8px', display: 'flex', alignItems: 'center' }}>
+        <button onClick={() => {
+          setMobileOpen(true);
+          window.dispatchEvent(new Event('close-mobile-cart'));
+        }} style={{ background: 'rgba(255,255,255,0.1)', border: 'none', color: '#fff', padding: '8px', borderRadius: '8px', display: 'flex', alignItems: 'center' }}>
           <IconHamburger />
         </button>
       </div>

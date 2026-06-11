@@ -294,6 +294,12 @@ const Cashier = ({ isOnline, onSyncUpdate, syncVersion = 0 }) => {
     const [showMobileCart, setShowMobileCart] = useState(false);
     const cartCount = cart.reduce((s, i) => s + i.quantity, 0);
 
+    useEffect(() => {
+        const handleCloseCart = () => setShowMobileCart(false);
+        window.addEventListener('close-mobile-cart', handleCloseCart);
+        return () => window.removeEventListener('close-mobile-cart', handleCloseCart);
+    }, []);
+
     return (
         <div style={{ padding: '12px', maxWidth: '100%' }}>
 
@@ -310,7 +316,10 @@ const Cashier = ({ isOnline, onSyncUpdate, syncVersion = 0 }) => {
                         boxShadow: '0 -4px 16px rgba(45,90,63,0.35)',
                     }}
                     className="mobile-cart-bar"
-                    onClick={() => setShowMobileCart(true)}
+                    onClick={() => {
+                        setShowMobileCart(true);
+                        window.dispatchEvent(new Event('close-sidebar'));
+                    }}
                 >
                     <span style={{ fontWeight: 700, fontSize: '15px' }}>🛒 {cartCount} item</span>
                     <span style={{ fontWeight: 800, fontSize: '16px' }}>{formatRupiah(calculateTotal())} →</span>
@@ -320,12 +329,12 @@ const Cashier = ({ isOnline, onSyncUpdate, syncVersion = 0 }) => {
             {/* ===== MOBILE: Cart bottom sheet overlay ===== */}
             {showMobileCart && (
                 <div
-                    style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.5)', zIndex: 55 }}
+                    style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', zIndex: 999 }}
                     onClick={() => setShowMobileCart(false)}
                 />
             )}
             <div style={{
-                position: 'absolute', bottom: 0, left: 0, right: 0, zIndex: 60,
+                position: 'fixed', bottom: 0, left: 0, right: 0, zIndex: 1000,
                 background: '#fff', borderRadius: '20px 20px 0 0',
                 boxShadow: '0 -8px 32px rgba(0,0,0,0.2)',
                 maxHeight: '100%', overflowY: 'auto',
