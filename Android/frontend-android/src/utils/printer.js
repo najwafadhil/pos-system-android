@@ -6,6 +6,7 @@ import { Capacitor, registerPlugin } from '@capacitor/core';
 import { Share } from '@capacitor/share';
 import { Filesystem, Directory } from '@capacitor/filesystem';
 import html2canvas from 'html2canvas';
+import dbManager from './indexedDB';
 
 // Daftarkan Custom Native Plugin
 const EscPosPrinterPlugin = registerPlugin('EscPosPrinter');
@@ -77,8 +78,8 @@ export const printReceipt = async (transaction, transactionCode) => {
 // =============================================
 const STORE_ADDRESS = 'Ruko The Hive Park Avenue, Jl.Park Avenue, Hive@Prive No.053, Perum Park Serpong, Legok, Kab.Tangerang.';
 
-const generateReceiptText = (transaction, transactionCode) => {
-    const appName = localStorage.getItem('app_name') || 'Warung Nasi Rames Bu Rofi';
+const generateReceiptText = async (transaction, transactionCode) => {
+    const appName = (await dbManager.getGlobalSetting('app_name')) || 'Warung Nasi Rames Bu Rofi';
     const kasirData = localStorage.getItem('user_data');
     const kasirName = kasirData ? JSON.parse(kasirData).full_name || JSON.parse(kasirData).username : '-';
     
@@ -130,7 +131,7 @@ const generateReceiptText = (transaction, transactionCode) => {
 // HELPER: Share Receipt as Image (Native View-to-Bitmap Fallback)
 // =============================================
 const shareReceiptAsImage = async (transaction, transactionCode) => {
-    const appName = localStorage.getItem('app_name') || 'Warung Nasi Rames Bu Rofi';
+    const appName = (await dbManager.getGlobalSetting('app_name')) || 'Warung Nasi Rames Bu Rofi';
     // Gunakan URL statis atau base64 untuk logo jika perlu. Di implementasi native sederhana kita skip logo dinamis untuk sementara 
     // atau biarkan ImageView kosong, karena render Bitmap sudah sempurna untuk teks.
     const kasirData = localStorage.getItem('user_data');
@@ -155,8 +156,8 @@ const shareReceiptAsImage = async (transaction, transactionCode) => {
         customerName: transaction.customer_name || "",
         total: "Rp " + Math.round(total).toLocaleString('id-ID'),
         paymentMethod: (transaction.payment_method || 'cash').toUpperCase(),
-        logoBase64: (() => {
-            const appLogo = localStorage.getItem('app_logo') || '';
+        logoBase64: await (async () => {
+            const appLogo = (await dbManager.getGlobalSetting('app_logo')) || '';
             if (appLogo && appLogo.startsWith('data:')) {
                 return appLogo.split(',')[1] || '';
             }
@@ -205,8 +206,8 @@ const shareReceiptAsImage = async (transaction, transactionCode) => {
 // HELPER: Generate Image via JS (Fallback)
 // =============================================
 const generateImageViaHtml2Canvas = async (transaction, transactionCode) => {
-    const appName = localStorage.getItem('app_name') || 'Warung Nasi Rames Bu Rofi';
-    const appLogo = localStorage.getItem('app_logo') || '';
+    const appName = (await dbManager.getGlobalSetting('app_name')) || 'Warung Nasi Rames Bu Rofi';
+    const appLogo = (await dbManager.getGlobalSetting('app_logo')) || '';
     const kasirData = localStorage.getItem('user_data');
     const kasirName = kasirData ? JSON.parse(kasirData).full_name || JSON.parse(kasirData).username : '-';
     
@@ -365,7 +366,7 @@ const generateImageViaHtml2Canvas = async (transaction, transactionCode) => {
 // HELPER: Share Receipt as Plain Text (Native Fallback)
 // =============================================
 const shareReceiptAsText = async (transaction, transactionCode) => {
-    const text = generatePlainTextReceipt(transaction, transactionCode);
+    const text = await generatePlainTextReceipt(transaction, transactionCode);
     await Share.share({
         title: `Struk - ${transactionCode}`,
         text: text,
@@ -376,8 +377,8 @@ const shareReceiptAsText = async (transaction, transactionCode) => {
 // =============================================
 // HELPER: Generate Plain Text String for Share
 // =============================================
-const generatePlainTextReceipt = (transaction, transactionCode) => {
-    const appName = localStorage.getItem('app_name') || 'Warung Nasi Rames Bu Rofi';
+const generatePlainTextReceipt = async (transaction, transactionCode) => {
+    const appName = (await dbManager.getGlobalSetting('app_name')) || 'Warung Nasi Rames Bu Rofi';
     const kasirData = localStorage.getItem('user_data');
     const kasirName = kasirData ? JSON.parse(kasirData).full_name || JSON.parse(kasirData).username : '-';
     
@@ -440,7 +441,7 @@ const generatePlainTextReceipt = (transaction, transactionCode) => {
 // =============================================
 const printViaCapacitorBluetooth = async (transaction, transactionCode, macAddress) => {
     try {
-        const text = generateReceiptText(transaction, transactionCode);
+        const text = await generateReceiptText(transaction, transactionCode);
         
         // Paper width from settings (default 58mm for EP58M printers)
         const paperWidth = parseInt(localStorage.getItem('printer_paper_width') || '58', 10);
@@ -467,7 +468,7 @@ const printViaCapacitorBluetooth = async (transaction, transactionCode, macAddre
 // METODE 1: WebUSB ESC/POS (Koneksi Langsung)
 // =============================================
 const printViaWebUSB = async (transaction, transactionCode) => {
-    const text = generateReceiptText(transaction, transactionCode);
+    const text = await generateReceiptText(transaction, transactionCode);
 
     // Filter printer POS/Thermal generic
     const device = await navigator.usb.requestDevice({
@@ -514,8 +515,8 @@ const printViaWebUSB = async (transaction, transactionCode) => {
 // produces a full, unclipped print output.
 // =============================================
 const printThermalHTML = async (transaction, transactionCode) => {
-    const appName = localStorage.getItem('app_name') || 'Warung Nasi Rames Bu Rofi';
-    const appLogo = localStorage.getItem('app_logo') || '';
+    const appName = (await dbManager.getGlobalSetting('app_name')) || 'Warung Nasi Rames Bu Rofi';
+    const appLogo = (await dbManager.getGlobalSetting('app_logo')) || '';
     const kasirData = localStorage.getItem('user_data');
     const kasirName = kasirData ? JSON.parse(kasirData).full_name || JSON.parse(kasirData).username : '-';
 

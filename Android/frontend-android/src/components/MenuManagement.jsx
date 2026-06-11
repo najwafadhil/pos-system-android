@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
+import dbManager from '../utils/indexedDB';
 
 const formatRupiah = (amount) => {
   const number = parseFloat(amount) || 0;
@@ -24,22 +25,45 @@ export default function MenuManagement() {
   const [message, setMessage] = useState({ text: '', type: '' });
   const fileInputRef = useRef(null);
 
-  const defaultCategories = ['Makanan', 'Minuman', 'Lauk', 'Camilan', 'Lainnya'];
-  const [customCategories, setCustomCategories] = useState(() => {
-    try { return JSON.parse(localStorage.getItem('pos_custom_categories')) || defaultCategories; }
-    catch { return defaultCategories; }
-  });
+  // Default categories sebagai fallback jika server/IndexedDB kosong
+  const defaultCategories = ['Makanan', 'Minuman', 'Lainnya'];
+  const [customCategories, setCustomCategories] = useState(defaultCategories);
   
   const [showCategoryModal, setShowCategoryModal] = useState(false);
   const [newCatName, setNewCatName] = useState('');
   const [editingCat, setEditingCat] = useState(null);
   const [editCatName, setEditCatName] = useState('');
 
-  const categories = [...new Set([...customCategories, ...menuItems.map(i => i.category)])].filter(Boolean);
+  // Categories are derived ONLY from customCategories — orphan item categories
+  // no longer resurrect deleted categories. Orphan items render under 'Lainnya'.
+  const categories = [...customCategories];
+
+  // =============================================
+  // LOAD CATEGORIES from IndexedDB (cached from server)
+  // =============================================
+  const loadCategories = useCallback(async () => {
+    try {
+      const cached = await dbManager.getCategories();
+      if (cached && cached.length > 0) {
+        setCustomCategories(cached.map(c => c.name));
+      }
+    } catch (err) {
+      console.warn('⚠️ Failed to load categories from IndexedDB:', err);
+    }
+  }, []);
 
   useEffect(() => {
-    localStorage.setItem('pos_custom_categories', JSON.stringify(customCategories));
-  }, [customCategories]);
+    loadCategories();
+  }, [loadCategories]);
+
+  // Listen for master-data-updated events (fired by useSync after fetchMasterData)
+  useEffect(() => {
+    const handleMasterDataUpdate = () => {
+      loadCategories();
+    };
+    window.addEventListener('master-data-updated', handleMasterDataUpdate);
+    return () => window.removeEventListener('master-data-updated', handleMasterDataUpdate);
+  }, [loadCategories]);
 
   const loadMenu = useCallback(async () => {
     setLoading(true);
@@ -153,11 +177,29 @@ export default function MenuManagement() {
     setForm({ name: '', description: '', cost_price: '', profit: '', category: 'Makanan', is_available: true, discount_percent: 0, discount_nominal: 0, is_discount_active: false, options: [] });
   };
 
-  const handleAddCategory = () => {
+  const handleAddCategory = async () => {
     if (!newCatName.trim()) return;
     if (categories.includes(newCatName.trim())) { alert('Kategori sudah ada!'); return; }
-    setCustomCategories([...customCategories, newCatName.trim()]);
-    setNewCatName('');
+
+    try {
+      const res = await fetch(`${process.env.REACT_APP_API_URL || ""}/api/categories`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('auth_token')}` },
+        body: JSON.stringify({ action: 'create', name: newCatName.trim() })
+      });
+      const data = await res.json();
+      if (data.success) {
+        setCustomCategories([...customCategories, newCatName.trim()]);
+        setNewCatName('');
+        // Refresh IndexedDB cache
+        loadCategories();
+        showMsg('✅ Kategori berhasil ditambahkan');
+      } else {
+        alert(data.error || 'Gagal menambahkan kategori');
+      }
+    } catch (e) {
+      showMsg('Gagal menambahkan kategori', 'error');
+    }
   };
 
   const handleDeleteCategory = async (cat) => {
@@ -165,16 +207,19 @@ export default function MenuManagement() {
     if (!window.confirm(`Hapus kategori "${cat}"? Semua menu di dalamnya akan otomatis dipindah ke "Lainnya".`)) return;
     
     try {
-      const res = await fetch(`${process.env.REACT_APP_API_URL || ""}/api/menu/category/delete`, {
-        method: 'PUT',
+      const res = await fetch(`${process.env.REACT_APP_API_URL || ""}/api/categories`, {
+        method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('auth_token')}` },
-        body: JSON.stringify({ category: cat })
+        body: JSON.stringify({ action: 'delete', name: cat })
       });
       const data = await res.json();
       if (data.success) {
         setCustomCategories(customCategories.filter(c => c !== cat));
         loadMenu();
-        showMsg(`Kategori dihapus. ${data.updatedCount} item dipindah ke Lainnya.`);
+        loadCategories();
+        showMsg(`Kategori dihapus. ${data.updatedCount || 0} item dipindah ke Lainnya.`);
+      } else {
+        showMsg(data.error || 'Gagal menghapus kategori', 'error');
       }
     } catch (e) { showMsg('Gagal menghapus kategori', 'error'); }
   };
@@ -185,10 +230,10 @@ export default function MenuManagement() {
     if (oldCat === 'Lainnya') { alert('Kategori Lainnya tidak dapat diedit'); return; }
 
     try {
-      const res = await fetch(`${process.env.REACT_APP_API_URL || ""}/api/menu/category/rename`, {
-        method: 'PUT',
+      const res = await fetch(`${process.env.REACT_APP_API_URL || ""}/api/categories`, {
+        method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('auth_token')}` },
-        body: JSON.stringify({ oldCategory: oldCat, newCategory: newCat.trim() })
+        body: JSON.stringify({ action: 'rename', oldName: oldCat, newName: newCat.trim() })
       });
       const data = await res.json();
       if (data.success) {
@@ -196,7 +241,10 @@ export default function MenuManagement() {
         if (form.category === oldCat) setForm({...form, category: newCat.trim()});
         setEditingCat(null);
         loadMenu();
-        showMsg(`Kategori diubah. ${data.updatedCount} item diperbarui.`);
+        loadCategories();
+        showMsg(`Kategori diubah. ${data.updatedCount || 0} item diperbarui.`);
+      } else {
+        showMsg(data.error || 'Gagal mengubah kategori', 'error');
       }
     } catch (e) { showMsg('Gagal mengubah kategori', 'error'); }
   };
@@ -206,37 +254,45 @@ export default function MenuManagement() {
   const sellingPrice = cost + prof;
   const profitPercentage = cost > 0 ? ((prof / cost) * 100).toFixed(1) : 0;
 
+  // FIX: Group items whose category is NOT in customCategories under 'Lainnya'
   const grouped = categories.reduce((acc, cat) => {
-    const items = menuItems.filter(i => i.category === cat);
-    if (items.length > 0 || !filterCategory) acc[cat] = items;
+    acc[cat] = [];
     return acc;
   }, {});
-
-  const inp = {
-    width: '100%', padding: '10px 14px', border: '1px solid #e2e8f0', borderRadius: '10px',
-    fontSize: '14px', outline: 'none', background: '#fff', color: '#2D3B2D',
-    boxSizing: 'border-box',
-  };
-  const label = { display: 'block', fontSize: '12px', fontWeight: 600, color: '#555', marginBottom: '5px', textTransform: 'uppercase', letterSpacing: '0.05em' };
+  menuItems.forEach(item => {
+    const targetCat = customCategories.includes(item.category) ? item.category : 'Lainnya';
+    if (grouped[targetCat]) {
+      grouped[targetCat].push(item);
+    } else {
+      // Safety fallback — if 'Lainnya' key somehow missing
+      grouped['Lainnya'] = grouped['Lainnya'] || [];
+      grouped['Lainnya'].push(item);
+    }
+  });
+  // When filtering, only show the filtered category
+  const displayGroups = filterCategory
+    ? Object.entries(grouped).filter(([cat]) => cat === filterCategory)
+    : Object.entries(grouped);
 
   return (
-    <div style={{ maxWidth: '960px', margin: '0 auto', padding: '28px 20px' }}>
+    <div className="max-w-4xl mx-auto px-4 py-6 sm:px-5 sm:py-7">
       {/* Header */}
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '24px' }}>
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-6">
         <div>
-          <button onClick={() => navigate(-1)} style={{ background: 'none', border: 'none', color: '#64748b', fontSize: '13px', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '4px', cursor: 'pointer', padding: '0 0 8px 0' }}>
+          <button
+            onClick={() => navigate(-1)}
+            className="flex items-center gap-1 text-slate-500 text-sm font-semibold pb-2 bg-transparent border-none cursor-pointer hover:text-slate-700 transition-colors min-h-[44px]"
+          >
             <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" /></svg>
             Kembali
           </button>
-          <h1 style={{ fontSize: '22px', fontWeight: 700, color: '#2D3B2D', margin: 0 }}>Manajemen Menu</h1>
-          <p style={{ color: '#888', fontSize: '13px', margin: '2px 0 0' }}>{menuItems.length} item terdaftar</p>
+          <h1 className="text-xl sm:text-[22px] font-bold text-[#2D3B2D] m-0">Manajemen Menu</h1>
+          <p className="text-gray-400 text-[13px] mt-0.5">{menuItems.length} item terdaftar</p>
         </div>
         <button
           id="menu-add-btn"
           onClick={() => { resetForm(); setShowForm(true); }}
-          style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '10px 20px', background: '#2D5A3F', color: '#FFFFFF', border: 'none', borderRadius: '10px', fontWeight: 700, fontSize: '14px', cursor: 'pointer', boxShadow: '0 4px 14px rgba(45,90,63,0.3)', transition: 'all 0.2s' }}
-          onMouseEnter={e => e.currentTarget.style.transform = 'scale(1.03)'}
-          onMouseLeave={e => e.currentTarget.style.transform = 'scale(1)'}
+          className="flex items-center justify-center gap-2 px-5 py-3 min-h-[44px] bg-[#2D5A3F] text-white border-none rounded-[10px] font-bold text-sm cursor-pointer shadow-[0_4px_14px_rgba(45,90,63,0.3)] transition-transform duration-200 hover:scale-[1.03] active:scale-95 w-full sm:w-auto"
         >
           + Tambah Menu
         </button>
@@ -244,83 +300,121 @@ export default function MenuManagement() {
 
       {/* Message */}
       {message.text && (
-        <div style={{ marginBottom: '16px', padding: '12px 16px', borderRadius: '10px', fontSize: '14px', fontWeight: 500, background: message.type === 'error' ? '#fee2e2' : '#dcfce7', color: message.type === 'error' ? '#dc2626' : '#16a34a', border: `1px solid ${message.type === 'error' ? '#fca5a5' : '#86efac'}` }}>
+        <div className={`mb-4 px-4 py-3 rounded-[10px] text-sm font-medium border ${
+          message.type === 'error'
+            ? 'bg-red-100 text-red-600 border-red-300'
+            : 'bg-green-100 text-green-600 border-green-300'
+        }`}>
           {message.text}
         </div>
       )}
 
       {/* Add/Edit Form */}
       {showForm && (
-        <div style={{ marginBottom: '24px', background: '#fff', border: '1px solid #e2e8f0', borderRadius: '16px', boxShadow: '0 4px 24px rgba(0,0,0,0.08)', padding: '24px' }}>
-          <h2 style={{ fontSize: '16px', fontWeight: 700, color: '#2D3B2D', marginTop: 0, marginBottom: '20px' }}>{editItem ? '✏️ Edit Menu' : '➕ Tambah Menu Baru'}</h2>
+        <div className="mb-6 bg-white border border-slate-200 rounded-2xl shadow-[0_4px_24px_rgba(0,0,0,0.08)] p-4 sm:p-6">
+          <h2 className="text-base font-bold text-[#2D3B2D] mt-0 mb-5">{editItem ? '✏️ Edit Menu' : '➕ Tambah Menu Baru'}</h2>
           <form onSubmit={handleSubmit}>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               {/* Nama */}
               <div>
-                <label style={label}>Nama Menu *</label>
-                <input id="menu-form-name" type="text" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} required placeholder="Contoh: Nasi Goreng" style={inp} />
+                <label className="block text-xs font-semibold text-gray-500 mb-1.5 uppercase tracking-wide">Nama Menu *</label>
+                <input
+                  id="menu-form-name"
+                  type="text"
+                  value={form.name}
+                  onChange={e => setForm({ ...form, name: e.target.value })}
+                  required
+                  placeholder="Contoh: Nasi Goreng"
+                  className="w-full p-3 min-h-[44px] border border-slate-200 rounded-[10px] text-sm outline-none bg-white text-[#2D3B2D] focus:border-[#2D5A3F] focus:ring-1 focus:ring-[#2D5A3F]/20 transition-colors"
+                />
               </div>
 
               {/* Kategori */}
               <div>
-                <label style={label}>Kategori *</label>
-                <select id="menu-form-category" value={form.category} onChange={e => setForm({ ...form, category: e.target.value })} style={{ ...inp, cursor: 'pointer' }}>
+                <label className="block text-xs font-semibold text-gray-500 mb-1.5 uppercase tracking-wide">Kategori *</label>
+                <select
+                  id="menu-form-category"
+                  value={form.category}
+                  onChange={e => setForm({ ...form, category: e.target.value })}
+                  className="w-full p-3 min-h-[44px] border border-slate-200 rounded-[10px] text-sm outline-none bg-white text-[#2D3B2D] cursor-pointer focus:border-[#2D5A3F] focus:ring-1 focus:ring-[#2D5A3F]/20 transition-colors"
+                >
                   {categories.map(c => <option key={c} value={c}>{c}</option>)}
                 </select>
               </div>
 
               {/* Harga Modal */}
               <div>
-                <label style={label}>Harga Modal *</label>
-                <input id="menu-form-cost" type="text" value={form.cost_price ? formatRupiah(form.cost_price) : ''} onChange={e => setForm({ ...form, cost_price: e.target.value.replace(/\D/g, '') })} required placeholder="Rp. 15.000" style={inp} />
+                <label className="block text-xs font-semibold text-gray-500 mb-1.5 uppercase tracking-wide">Harga Modal *</label>
+                <input
+                  id="menu-form-cost"
+                  type="text"
+                  value={form.cost_price ? formatRupiah(form.cost_price) : ''}
+                  onChange={e => setForm({ ...form, cost_price: e.target.value.replace(/\D/g, '') })}
+                  required
+                  placeholder="Rp. 15.000"
+                  className="w-full p-3 min-h-[44px] border border-slate-200 rounded-[10px] text-sm outline-none bg-white text-[#2D3B2D] focus:border-[#2D5A3F] focus:ring-1 focus:ring-[#2D5A3F]/20 transition-colors"
+                />
               </div>
 
               {/* Profit */}
               <div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '5px' }}>
-                  <label style={{ ...label, marginBottom: 0 }}>Profit *</label>
+                <div className="flex justify-between items-center mb-1.5">
+                  <label className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Profit *</label>
                   {prof > 0 && cost > 0 && (
-                    <span style={{ color: '#16a34a', background: '#dcfce7', padding: '2px 6px', borderRadius: '4px', fontSize: '10px', fontWeight: 700 }}>
+                    <span className="text-green-600 bg-green-100 px-1.5 py-0.5 rounded text-[10px] font-bold">
                       +{profitPercentage}%
                     </span>
                   )}
                 </div>
-                <input id="menu-form-profit" type="text" value={form.profit ? formatRupiah(form.profit) : ''} onChange={e => setForm({ ...form, profit: e.target.value.replace(/\D/g, '') })} required placeholder="Rp. 10.000" style={inp} />
+                <input
+                  id="menu-form-profit"
+                  type="text"
+                  value={form.profit ? formatRupiah(form.profit) : ''}
+                  onChange={e => setForm({ ...form, profit: e.target.value.replace(/\D/g, '') })}
+                  required
+                  placeholder="Rp. 10.000"
+                  className="w-full p-3 min-h-[44px] border border-slate-200 rounded-[10px] text-sm outline-none bg-white text-[#2D3B2D] focus:border-[#2D5A3F] focus:ring-1 focus:ring-[#2D5A3F]/20 transition-colors"
+                />
               </div>
 
               {/* Harga Jual (auto-calculated) */}
-              <div style={{ gridColumn: '1 / -1', background: 'linear-gradient(135deg, #EAF2EC, #E0EDE3)', border: '1px solid rgba(45,90,63,0.2)', borderRadius: '10px', padding: '14px 18px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <div className="col-span-1 md:col-span-2 bg-gradient-to-br from-[#EAF2EC] to-[#E0EDE3] border border-[#2D5A3F]/20 rounded-[10px] p-3.5 sm:px-[18px] flex items-center justify-between">
                 <div>
-                  <p style={{ margin: 0, fontSize: '12px', color: '#888', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Harga Jual Otomatis (Modal + Profit)</p>
-                  <p style={{ margin: '4px 0 0', fontSize: '20px', fontWeight: 700, color: '#2D5A3F' }}>{formatRupiah(sellingPrice)}</p>
+                  <p className="m-0 text-xs text-gray-400 font-semibold uppercase tracking-wide">Harga Jual Otomatis (Modal + Profit)</p>
+                  <p className="mt-1 mb-0 text-xl font-bold text-[#2D5A3F]">{formatRupiah(sellingPrice)}</p>
                 </div>
-                <span style={{ fontSize: '28px' }}>🏷️</span>
+                <span className="text-[28px]">🏷️</span>
               </div>
 
               {/* Status */}
               <div>
-                <label style={label}>Status</label>
-                <select id="menu-form-status" value={form.is_available} onChange={e => setForm({ ...form, is_available: e.target.value === 'true' })} style={{ ...inp, cursor: 'pointer' }}>
+                <label className="block text-xs font-semibold text-gray-500 mb-1.5 uppercase tracking-wide">Status</label>
+                <select
+                  id="menu-form-status"
+                  value={form.is_available}
+                  onChange={e => setForm({ ...form, is_available: e.target.value === 'true' })}
+                  className="w-full p-3 min-h-[44px] border border-slate-200 rounded-[10px] text-sm outline-none bg-white text-[#2D3B2D] cursor-pointer focus:border-[#2D5A3F] focus:ring-1 focus:ring-[#2D5A3F]/20 transition-colors"
+                >
                   <option value="true">✅ Tersedia</option>
                   <option value="false">❌ Tidak Tersedia</option>
                 </select>
               </div>
 
               {/* Diskon */}
-              <div style={{ background: '#fafafa', border: '1px solid #e5e7eb', borderRadius: '12px', padding: '16px' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
-                  <label style={{ ...label, marginBottom: 0 }}>Pengaturan Diskon</label>
-                  <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', fontSize: '14px', color: '#555', fontWeight: 600 }}>
-                    <input type="checkbox" checked={form.is_discount_active} onChange={e => setForm({ ...form, is_discount_active: e.target.checked })} style={{ width: '18px', height: '18px', cursor: 'pointer' }} />
+              <div className="bg-gray-50 border border-gray-200 rounded-xl p-4">
+                <div className="flex justify-between items-center mb-3">
+                  <label className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Pengaturan Diskon</label>
+                  <label className="flex items-center gap-2 cursor-pointer text-sm text-gray-500 font-semibold">
+                    <input type="checkbox" checked={form.is_discount_active} onChange={e => setForm({ ...form, is_discount_active: e.target.checked })} className="w-[18px] h-[18px] cursor-pointer accent-[#2D5A3F]" />
                     Aktifkan Diskon
                   </label>
                 </div>
                 
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', opacity: form.is_discount_active ? 1 : 0.5, pointerEvents: form.is_discount_active ? 'auto' : 'none' }}>
+                <div className={`grid grid-cols-1 sm:grid-cols-2 gap-4 ${form.is_discount_active ? 'opacity-100' : 'opacity-50 pointer-events-none'}`}>
                   <div>
-                    <label style={{ fontSize: '12px', fontWeight: 600, color: '#64748b', display: 'block', marginBottom: '6px' }}>Diskon Nominal</label>
-                    <div style={{ display: 'flex', alignItems: 'center', background: '#fff', border: '1px solid #e2e8f0', borderRadius: '10px', overflow: 'hidden' }}>
-                      <span style={{ padding: '0 12px', color: '#64748b', fontWeight: 600, fontSize: '14px', borderRight: '1px solid #e2e8f0' }}>Rp</span>
+                    <label className="text-xs font-semibold text-slate-500 block mb-1.5">Diskon Nominal</label>
+                    <div className="flex items-center bg-white border border-slate-200 rounded-[10px] overflow-hidden">
+                      <span className="px-3 text-slate-500 font-semibold text-sm border-r border-slate-200">Rp</span>
                       <input 
                         type="number" 
                         min="0" 
@@ -332,13 +426,13 @@ export default function MenuManagement() {
                           setForm({ ...form, discount_nominal: nominal, discount_percent: percent.toFixed(2) });
                         }} 
                         placeholder="0" 
-                        style={{ ...inp, border: 'none', borderRadius: 0 }} 
+                        className="flex-1 p-3 min-h-[44px] border-none text-sm outline-none bg-white text-[#2D3B2D]"
                       />
                     </div>
                   </div>
                   <div>
-                    <label style={{ fontSize: '12px', fontWeight: 600, color: '#64748b', display: 'block', marginBottom: '6px' }}>Diskon Persentase</label>
-                    <div style={{ display: 'flex', alignItems: 'center', background: '#fff', border: '1px solid #e2e8f0', borderRadius: '10px', overflow: 'hidden' }}>
+                    <label className="text-xs font-semibold text-slate-500 block mb-1.5">Diskon Persentase</label>
+                    <div className="flex items-center bg-white border border-slate-200 rounded-[10px] overflow-hidden">
                       <input 
                         type="number" 
                         min="0" 
@@ -352,27 +446,27 @@ export default function MenuManagement() {
                           setForm({ ...form, discount_percent: percent, discount_nominal: Math.round(nominal) });
                         }} 
                         placeholder="0" 
-                        style={{ ...inp, border: 'none', borderRadius: 0 }} 
+                        className="flex-1 p-3 min-h-[44px] border-none text-sm outline-none bg-white text-[#2D3B2D]"
                       />
-                      <span style={{ padding: '0 12px', color: '#64748b', fontWeight: 600, fontSize: '14px', borderLeft: '1px solid #e2e8f0' }}>%</span>
+                      <span className="px-3 text-slate-500 font-semibold text-sm border-l border-slate-200">%</span>
                     </div>
                   </div>
                 </div>
 
                 {form.is_discount_active && (parseFloat(form.discount_nominal) > 0) && (
-                  <div style={{ marginTop: '12px', padding: '10px 12px', background: '#fff', border: '1px dashed #cbd5e1', borderRadius: '8px' }}>
-                    <p style={{ margin: '0 0 4px', fontSize: '12px', color: '#64748b' }}>Simulasi Harga (Setelah Diskon):</p>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                      <span style={{ fontSize: '13px', fontWeight: 600 }}>Harga Jual:</span>
-                      <span style={{ fontSize: '14px', fontWeight: 800, color: '#dc2626' }}>
+                  <div className="mt-3 p-2.5 sm:px-3 bg-white border border-dashed border-slate-300 rounded-lg">
+                    <p className="m-0 mb-1 text-xs text-slate-500">Simulasi Harga (Setelah Diskon):</p>
+                    <div className="flex justify-between items-center">
+                      <span className="text-[13px] font-semibold">Harga Jual:</span>
+                      <span className="text-sm font-extrabold text-red-600">
                         {formatRupiah(((parseFloat(form.cost_price) || 0) + (parseFloat(form.profit) || 0)) - parseFloat(form.discount_nominal))}
                       </span>
                     </div>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '4px' }}>
-                      <span style={{ fontSize: '13px', fontWeight: 600 }}>Profit Bersih:</span>
-                      <span style={{ fontSize: '14px', fontWeight: 800, color: (parseFloat(form.profit) || 0) - parseFloat(form.discount_nominal) < 0 ? '#dc2626' : '#16a34a' }}>
+                    <div className="flex justify-between items-center mt-1">
+                      <span className="text-[13px] font-semibold">Profit Bersih:</span>
+                      <span className={`text-sm font-extrabold ${(parseFloat(form.profit) || 0) - parseFloat(form.discount_nominal) < 0 ? 'text-red-600' : 'text-green-600'}`}>
                         {formatRupiah((parseFloat(form.profit) || 0) - parseFloat(form.discount_nominal))} 
-                        <span style={{ fontSize: '11px', fontWeight: 600, marginLeft: '4px' }}>
+                        <span className="text-[11px] font-semibold ml-1">
                           ({parseFloat(form.cost_price) > 0 ? (((parseFloat(form.profit) || 0) - parseFloat(form.discount_nominal)) / parseFloat(form.cost_price) * 100).toFixed(1) : 0}%)
                         </span>
                       </span>
@@ -383,50 +477,55 @@ export default function MenuManagement() {
 
               {/* Foto */}
               <div>
-                <label style={label}>Foto Menu</label>
+                <label className="block text-xs font-semibold text-gray-500 mb-1.5 uppercase tracking-wide">Foto Menu</label>
                 <div
                   onClick={() => fileInputRef.current.click()}
-                  style={{ border: '2px dashed #e2e8f0', borderRadius: '10px', padding: '12px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '12px', transition: 'border-color 0.2s' }}
-                  onMouseEnter={e => e.currentTarget.style.borderColor = '#2D5A3F'}
-                  onMouseLeave={e => e.currentTarget.style.borderColor = '#e2e8f0'}
+                  className="border-2 border-dashed border-slate-200 rounded-[10px] p-3 cursor-pointer flex items-center gap-3 min-h-[44px] transition-colors hover:border-[#2D5A3F]"
                 >
                   {imagePreview ? (
-                    <img src={imagePreview} alt="preview" style={{ width: '56px', height: '56px', objectFit: 'cover', borderRadius: '8px' }} />
+                    <img src={imagePreview} alt="preview" className="w-14 h-14 object-cover rounded-lg flex-shrink-0" />
                   ) : (
-                    <div style={{ width: '56px', height: '56px', background: '#f8fafc', borderRadius: '8px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '22px' }}>📷</div>
+                    <div className="w-14 h-14 bg-slate-50 rounded-lg flex items-center justify-center text-[22px] flex-shrink-0">📷</div>
                   )}
-                  <div>
-                    <p style={{ margin: 0, fontSize: '13px', fontWeight: 600, color: '#2D3B2D' }}>{imagePreview ? 'Ganti Foto' : 'Upload Foto'}</p>
-                    <p style={{ margin: '2px 0 0', fontSize: '11px', color: '#aaa' }}>JPG, PNG, WEBP maks. 5MB</p>
+                  <div className="min-w-0">
+                    <p className="m-0 text-[13px] font-semibold text-[#2D3B2D]">{imagePreview ? 'Ganti Foto' : 'Upload Foto'}</p>
+                    <p className="m-0 mt-0.5 text-[11px] text-gray-400">JPG, PNG, WEBP maks. 5MB</p>
                   </div>
                 </div>
-                <input ref={fileInputRef} type="file" accept="image/*" onChange={handleImageChange} style={{ display: 'none' }} />
+                <input ref={fileInputRef} type="file" accept="image/*" onChange={handleImageChange} className="hidden" />
               </div>
 
               {/* Deskripsi */}
-              <div style={{ gridColumn: '1 / -1' }}>
-                <label style={label}>Deskripsi</label>
-                <textarea id="menu-form-desc" value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} rows={2} placeholder="Deskripsi singkat menu..." style={{ ...inp, resize: 'none' }} />
+              <div className="col-span-1 md:col-span-2">
+                <label className="block text-xs font-semibold text-gray-500 mb-1.5 uppercase tracking-wide">Deskripsi</label>
+                <textarea
+                  id="menu-form-desc"
+                  value={form.description}
+                  onChange={e => setForm({ ...form, description: e.target.value })}
+                  rows={2}
+                  placeholder="Deskripsi singkat menu..."
+                  className="w-full p-3 min-h-[44px] border border-slate-200 rounded-[10px] text-sm outline-none bg-white text-[#2D3B2D] resize-none focus:border-[#2D5A3F] focus:ring-1 focus:ring-[#2D5A3F]/20 transition-colors"
+                />
               </div>
 
               {/* ═══ OPSI MENU (Variants) ═══ */}
-              <div style={{ gridColumn: '1 / -1', background: '#f8fafc', border: '1px solid #e5e7eb', borderRadius: '12px', padding: '16px' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
-                  <label style={{ ...label, marginBottom: 0 }}>Opsi Menu (Varian)</label>
+              <div className="col-span-1 md:col-span-2 bg-slate-50 border border-gray-200 rounded-xl p-4">
+                <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-2 mb-3">
+                  <label className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Opsi Menu (Varian)</label>
                   <button type="button" onClick={() => {
                     setForm({ ...form, options: [...(form.options || []), { name: '', choices: [''] }] });
-                  }} style={{ padding: '6px 14px', background: '#2D5A3F', color: '#fff', border: 'none', borderRadius: '8px', fontSize: '12px', fontWeight: 600, cursor: 'pointer' }}>
+                  }} className="px-3.5 py-2 min-h-[44px] sm:min-h-0 bg-[#2D5A3F] text-white border-none rounded-lg text-xs font-semibold cursor-pointer hover:bg-[#234A32] transition-colors active:scale-95">
                     + Tambah Grup Opsi
                   </button>
                 </div>
 
                 {(!form.options || form.options.length === 0) && (
-                  <p style={{ color: '#9ca3af', fontSize: '13px', margin: '8px 0', fontStyle: 'italic' }}>Belum ada opsi. Klik "Tambah Grup Opsi" untuk menambah (misal: Level Pedas, Topping, dll.)</p>
+                  <p className="text-gray-400 text-[13px] my-2 italic">Belum ada opsi. Klik "Tambah Grup Opsi" untuk menambah (misal: Level Pedas, Topping, dll.)</p>
                 )}
 
                 {(form.options || []).map((optGroup, gi) => (
-                  <div key={gi} style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: '10px', padding: '14px', marginBottom: '10px' }}>
-                    <div style={{ display: 'flex', gap: '10px', alignItems: 'center', marginBottom: '10px' }}>
+                  <div key={gi} className="bg-white border border-slate-200 rounded-[10px] p-3.5 mb-2.5">
+                    <div className="flex flex-col sm:flex-row gap-2.5 sm:items-center mb-2.5">
                       <input
                         type="text"
                         placeholder="Nama Grup (Opsional)"
@@ -436,19 +535,19 @@ export default function MenuManagement() {
                           opts[gi] = { ...opts[gi], name: e.target.value };
                           setForm({ ...form, options: opts });
                         }}
-                        style={{ ...inp, flex: 1 }}
+                        className="flex-1 p-3 min-h-[44px] border border-slate-200 rounded-[10px] text-sm outline-none bg-white text-[#2D3B2D] focus:border-[#2D5A3F] transition-colors"
                       />
                       <button type="button" onClick={() => {
                         const opts = form.options.filter((_, i) => i !== gi);
                         setForm({ ...form, options: opts });
-                      }} style={{ padding: '8px 12px', background: '#fee2e2', color: '#dc2626', border: 'none', borderRadius: '8px', fontWeight: 700, cursor: 'pointer', fontSize: '13px', flexShrink: 0 }}>
+                      }} className="px-3 py-2 min-h-[44px] bg-red-100 text-red-600 border-none rounded-lg font-bold cursor-pointer text-[13px] flex-shrink-0 hover:bg-red-200 transition-colors active:scale-95">
                         🗑️ Hapus Grup
                       </button>
                     </div>
 
-                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', alignItems: 'center' }}>
+                    <div className="flex flex-wrap gap-2 items-center">
                       {optGroup.choices.map((choice, ci) => (
-                        <div key={ci} style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
+                        <div key={ci} className="flex gap-1 items-center">
                           <input
                             type="text"
                             placeholder={`Pilihan ${ci + 1}`}
@@ -460,7 +559,7 @@ export default function MenuManagement() {
                               opts[gi] = { ...opts[gi], choices: ch };
                               setForm({ ...form, options: opts });
                             }}
-                            style={{ ...inp, width: '140px' }}
+                            className="w-[140px] p-3 min-h-[44px] border border-slate-200 rounded-[10px] text-sm outline-none bg-white text-[#2D3B2D] focus:border-[#2D5A3F] transition-colors"
                           />
                           {optGroup.choices.length > 1 && (
                             <button type="button" onClick={() => {
@@ -468,7 +567,7 @@ export default function MenuManagement() {
                               const ch = opts[gi].choices.filter((_, i) => i !== ci);
                               opts[gi] = { ...opts[gi], choices: ch };
                               setForm({ ...form, options: opts });
-                            }} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#dc2626', fontWeight: 700, fontSize: '16px', padding: '2px' }}>×</button>
+                            }} className="bg-transparent border-none cursor-pointer text-red-600 font-bold text-base p-1 min-w-[44px] min-h-[44px] flex items-center justify-center hover:bg-red-50 rounded-lg transition-colors">×</button>
                           )}
                         </div>
                       ))}
@@ -476,7 +575,7 @@ export default function MenuManagement() {
                         const opts = [...form.options];
                         opts[gi] = { ...opts[gi], choices: [...opts[gi].choices, ''] };
                         setForm({ ...form, options: opts });
-                      }} style={{ padding: '6px 12px', background: '#f1f5f9', border: '1px dashed #94a3b8', borderRadius: '8px', fontSize: '12px', fontWeight: 600, color: '#475569', cursor: 'pointer' }}>
+                      }} className="px-3 py-2 min-h-[44px] bg-slate-100 border border-dashed border-slate-400 rounded-lg text-xs font-semibold text-slate-600 cursor-pointer hover:bg-slate-200 transition-colors">
                         + Pilihan
                       </button>
                     </div>
@@ -485,11 +584,21 @@ export default function MenuManagement() {
               </div>
 
               {/* Buttons */}
-              <div style={{ gridColumn: '1 / -1', display: 'flex', gap: '12px' }}>
-                <button id="menu-form-save" type="submit" disabled={saving} style={{ flex: 1, padding: '12px', background: saving ? '#aaa' : '#2D5A3F', color: '#FFFFFF', border: 'none', borderRadius: '10px', fontWeight: 700, fontSize: '14px', cursor: saving ? 'not-allowed' : 'pointer', transition: 'all 0.2s' }}>
+              <div className="col-span-1 md:col-span-2 flex flex-col sm:flex-row gap-3">
+                <button
+                  id="menu-form-save"
+                  type="submit"
+                  disabled={saving}
+                  className={`flex-1 p-3 min-h-[44px] text-white border-none rounded-[10px] font-bold text-sm transition-all duration-200 ${saving ? 'bg-gray-400 cursor-not-allowed' : 'bg-[#2D5A3F] cursor-pointer hover:bg-[#234A32] active:scale-[0.98]'}`}
+                >
                   {saving ? '⏳ Menyimpan...' : editItem ? '💾 Update Menu' : '➕ Simpan Menu'}
                 </button>
-                <button id="menu-form-cancel" type="button" onClick={resetForm} style={{ padding: '12px 24px', background: '#f1f5f9', color: '#555', border: 'none', borderRadius: '10px', fontWeight: 600, fontSize: '14px', cursor: 'pointer' }}>
+                <button
+                  id="menu-form-cancel"
+                  type="button"
+                  onClick={resetForm}
+                  className="px-6 p-3 min-h-[44px] bg-slate-100 text-gray-500 border-none rounded-[10px] font-semibold text-sm cursor-pointer hover:bg-slate-200 transition-colors active:scale-[0.98]"
+                >
                   Batal
                 </button>
               </div>
@@ -499,114 +608,98 @@ export default function MenuManagement() {
       )}
 
       {/* Filter */}
-      <div style={{ display: 'flex', gap: '8px', marginBottom: '20px', flexWrap: 'wrap', alignItems: 'center' }}>
-        <button onClick={() => setFilterCategory('')} style={{ padding: '7px 18px', borderRadius: '20px', border: 'none', cursor: 'pointer', fontSize: '13px', fontWeight: 600, background: !filterCategory ? '#2D5A3F' : '#f1f5f9', color: !filterCategory ? '#fff' : '#555', transition: 'all 0.15s' }}>Semua</button>
+      <div className="flex gap-2 mb-5 flex-wrap items-center">
+        <button
+          onClick={() => setFilterCategory('')}
+          className={`px-4 py-2 min-h-[44px] rounded-full border-none cursor-pointer text-[13px] font-semibold transition-all duration-150 ${!filterCategory ? 'bg-[#2D5A3F] text-white' : 'bg-slate-100 text-gray-500 hover:bg-slate-200'}`}
+        >Semua</button>
         {categories.map(c => (
-          <button key={c} onClick={() => setFilterCategory(c)} style={{ padding: '7px 18px', borderRadius: '20px', border: 'none', cursor: 'pointer', fontSize: '13px', fontWeight: 600, background: filterCategory === c ? '#2D5A3F' : '#f1f5f9', color: filterCategory === c ? '#fff' : '#555', transition: 'all 0.15s' }}>{c}</button>
+          <button
+            key={c}
+            onClick={() => setFilterCategory(c)}
+            className={`px-4 py-2 min-h-[44px] rounded-full border-none cursor-pointer text-[13px] font-semibold transition-all duration-150 ${filterCategory === c ? 'bg-[#2D5A3F] text-white' : 'bg-slate-100 text-gray-500 hover:bg-slate-200'}`}
+          >{c}</button>
         ))}
-        <button onClick={() => setShowCategoryModal(true)} style={{ padding: '7px 18px', borderRadius: '20px', border: '1px dashed #2D5A3F', cursor: 'pointer', fontSize: '13px', fontWeight: 600, background: 'transparent', color: '#2D5A3F', transition: 'all 0.15s', marginLeft: 'auto' }}>⚙️ Kelola Kategori</button>
+        <button
+          onClick={() => setShowCategoryModal(true)}
+          className="px-4 py-2 min-h-[44px] rounded-full border border-dashed border-[#2D5A3F] cursor-pointer text-[13px] font-semibold bg-transparent text-[#2D5A3F] transition-all duration-150 hover:bg-[#EAF2EC] ml-auto"
+        >⚙️ Kelola Kategori</button>
       </div>
 
       {/* Menu List */}
       {loading ? (
-        <div style={{ textAlign: 'center', padding: '60px', color: '#aaa', fontSize: '15px' }}>⏳ Memuat menu...</div>
+        <div className="text-center py-16 text-gray-400 text-[15px]">⏳ Memuat menu...</div>
       ) : (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
-          {Object.entries(grouped).map(([cat, items]) => (
-            <div key={cat} style={{ background: '#fff', borderRadius: '14px', boxShadow: '0 2px 12px rgba(0,0,0,0.06)', border: '1px solid #f0f0f0', overflow: 'hidden' }}>
+        <div className="flex flex-col gap-5">
+          {displayGroups.map(([cat, items]) => (
+            <div key={cat} className="bg-white rounded-[14px] shadow-[0_2px_12px_rgba(0,0,0,0.06)] border border-gray-100 overflow-hidden">
               {/* Category Header */}
-              <div style={{ padding: '12px 20px', background: 'linear-gradient(135deg, #2D3B2D, #3d3d3d)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                <h3 style={{ margin: 0, fontWeight: 700, color: '#FFFFFF', fontSize: '14px' }}>{cat}</h3>
-                <span style={{ fontSize: '11px', color: 'rgba(255,255,255,0.5)', background: 'rgba(255,255,255,0.1)', padding: '2px 10px', borderRadius: '20px' }}>{items.length} item</span>
+              <div className="px-4 sm:px-5 py-3 bg-gradient-to-br from-[#2D3B2D] to-[#3d3d3d] flex items-center justify-between">
+                <h3 className="m-0 font-bold text-white text-sm">{cat}</h3>
+                <span className="text-[11px] text-white/50 bg-white/10 px-2.5 py-0.5 rounded-full">{items.length} item</span>
               </div>
 
               {items.length === 0 ? (
-                <p style={{ color: '#bbb', fontSize: '13px', textAlign: 'center', padding: '24px' }}>Belum ada menu di kategori ini</p>
+                <p className="text-gray-300 text-[13px] text-center py-6">Belum ada menu di kategori ini</p>
               ) : (
-                /* Responsive Card Grid — auto-fill columns, min 220px each */
-                <div style={{
-                  display: 'grid',
-                  gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))',
-                  gap: '12px',
-                  padding: '16px',
-                }}>
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 p-4">
                   {items.map(item => (
-                    <div key={item.id} style={{
-                      background: '#f8fafc',
-                      border: '1px solid #e2e8f0',
-                      borderRadius: '12px',
-                      overflow: 'hidden',
-                      display: 'flex',
-                      flexDirection: 'column',
-                      transition: 'box-shadow 0.2s, border-color 0.2s',
-                    }}
-                      onMouseEnter={e => { e.currentTarget.style.boxShadow = '0 4px 16px rgba(0,0,0,0.1)'; e.currentTarget.style.borderColor = '#2D5A3F'; }}
-                      onMouseLeave={e => { e.currentTarget.style.boxShadow = 'none'; e.currentTarget.style.borderColor = '#e2e8f0'; }}
-                    >
+                    <div key={item.id} className="bg-slate-50 border border-slate-200 rounded-xl overflow-hidden flex flex-col transition-all duration-200 hover:shadow-[0_4px_16px_rgba(0,0,0,0.1)] hover:border-[#2D5A3F]">
                       {/* Image */}
-                      <div style={{ width: '100%', height: '120px', overflow: 'hidden', background: '#e2e8f0', flexShrink: 0, position: 'relative' }}>
+                      <div className="w-full h-[120px] overflow-hidden bg-slate-200 flex-shrink-0 relative">
                         {item.image_url ? (
-                          <img src={item.image_url.startsWith('/') ? `${process.env.REACT_APP_API_URL || ""}${item.image_url}` : item.image_url} alt={item.name} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                          <img src={item.image_url.startsWith('/') ? `${process.env.REACT_APP_API_URL || ""}${item.image_url}` : item.image_url} alt={item.name} className="w-full h-full object-cover" />
                         ) : (
-                          <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '36px' }}>🍽️</div>
+                          <div className="w-full h-full flex items-center justify-center text-4xl">🍽️</div>
                         )}
                         {/* Status badge */}
-                        <span style={{
-                          position: 'absolute', top: '8px', right: '8px',
-                          padding: '2px 8px', borderRadius: '20px', fontSize: '10px', fontWeight: 700,
-                          background: item.is_available ? '#dcfce7' : '#fee2e2',
-                          color: item.is_available ? '#16a34a' : '#dc2626',
-                        }}>
+                        <span className={`absolute top-2 right-2 px-2 py-0.5 rounded-full text-[10px] font-bold ${item.is_available ? 'bg-green-100 text-green-600' : 'bg-red-100 text-red-600'}`}>
                           {item.is_available ? '✅ Tersedia' : '❌ Habis'}
                         </span>
                       </div>
 
                       {/* Info */}
-                      <div style={{ padding: '12px', flex: 1, display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                        <p style={{ margin: 0, fontWeight: 700, color: '#2D3B2D', fontSize: '14px', lineHeight: 1.3 }}>{item.name}</p>
+                      <div className="p-3 flex-1 flex flex-col gap-1.5">
+                        <p className="m-0 font-bold text-[#2D3B2D] text-sm leading-tight">{item.name}</p>
                         {item.description && (
-                          <p style={{ margin: 0, fontSize: '11px', color: '#aaa', lineHeight: 1.4 }}>{item.description.substring(0, 60)}{item.description.length > 60 ? '…' : ''}</p>
+                          <p className="m-0 text-[11px] text-gray-400 leading-snug">{item.description.substring(0, 60)}{item.description.length > 60 ? '…' : ''}</p>
                         )}
 
                         {/* Prices */}
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 'auto', paddingTop: '8px', borderTop: '1px solid #e2e8f0' }}>
+                        <div className="flex justify-between items-center mt-auto pt-2 border-t border-slate-200">
                           <div>
-                            <p style={{ margin: 0, fontSize: '10px', color: '#aaa', fontWeight: 600, textTransform: 'uppercase' }}>Harga Jual</p>
+                            <p className="m-0 text-[10px] text-gray-400 font-semibold uppercase">Harga Jual</p>
                             {item.is_discount_active && (item.discount_percent > 0 || item.discount_nominal > 0) ? (
                               <>
-                                <p style={{ margin: 0, fontWeight: 600, color: '#aaa', fontSize: '12px', textDecoration: 'line-through' }}>{formatRupiah(item.price)}</p>
-                                <p style={{ margin: 0, fontWeight: 800, color: '#dc2626', fontSize: '16px' }}>
+                                <p className="m-0 font-semibold text-gray-400 text-xs line-through">{formatRupiah(item.price)}</p>
+                                <p className="m-0 font-extrabold text-red-600 text-base">
                                   {formatRupiah(item.price - (item.discount_nominal > 0 ? parseFloat(item.discount_nominal) : item.price * parseFloat(item.discount_percent) / 100))} 
-                                  <span style={{fontSize: '10px', background: '#fee2e2', color: '#dc2626', padding: '2px 4px', borderRadius: '4px', marginLeft: '4px'}}>
+                                  <span className="text-[10px] bg-red-100 text-red-600 px-1 py-0.5 rounded ml-1">
                                     {item.discount_nominal > 0 ? `-Rp ${parseFloat(item.discount_nominal).toLocaleString('id-ID')}` : `-${parseFloat(item.discount_percent)}%`}
                                   </span>
                                 </p>
                               </>
                             ) : (
-                              <p style={{ margin: 0, fontWeight: 800, color: '#2D5A3F', fontSize: '16px' }}>{formatRupiah(item.price)}</p>
+                              <p className="m-0 font-extrabold text-[#2D5A3F] text-base">{formatRupiah(item.price)}</p>
                             )}
                           </div>
-                          <div style={{ textAlign: 'right' }}>
-                            <p style={{ margin: 0, fontSize: '10px', color: '#aaa' }}>Modal: {formatRupiah(item.cost_price || 0)}</p>
-                            <p style={{ margin: 0, fontSize: '10px', color: '#16a34a', fontWeight: 600 }}>Profit: {formatRupiah(item.profit || 0)}</p>
+                          <div className="text-right">
+                            <p className="m-0 text-[10px] text-gray-400">Modal: {formatRupiah(item.cost_price || 0)}</p>
+                            <p className="m-0 text-[10px] text-green-600 font-semibold">Profit: {formatRupiah(item.profit || 0)}</p>
                           </div>
                         </div>
 
                         {/* Action Buttons */}
-                        <div style={{ display: 'flex', gap: '8px', marginTop: '8px' }}>
+                        <div className="flex gap-2 mt-2">
                           <button
                             id={`menu-edit-${item.id}`}
                             onClick={() => handleEdit(item)}
-                            style={{ flex: 1, padding: '7px', background: '#eff6ff', color: '#2563eb', border: 'none', borderRadius: '8px', fontSize: '12px', fontWeight: 600, cursor: 'pointer', transition: 'background 0.15s' }}
-                            onMouseEnter={e => e.currentTarget.style.background = '#dbeafe'}
-                            onMouseLeave={e => e.currentTarget.style.background = '#eff6ff'}
+                            className="flex-1 p-2 min-h-[44px] bg-blue-50 text-blue-600 border-none rounded-lg text-xs font-semibold cursor-pointer transition-colors hover:bg-blue-100 active:scale-95"
                           >✏️ Edit</button>
                           <button
                             id={`menu-delete-${item.id}`}
                             onClick={() => handleDelete(item.id, item.name)}
-                            style={{ flex: 1, padding: '7px', background: '#fef2f2', color: '#dc2626', border: 'none', borderRadius: '8px', fontSize: '12px', fontWeight: 600, cursor: 'pointer', transition: 'background 0.15s' }}
-                            onMouseEnter={e => e.currentTarget.style.background = '#fee2e2'}
-                            onMouseLeave={e => e.currentTarget.style.background = '#fef2f2'}
+                            className="flex-1 p-2 min-h-[44px] bg-red-50 text-red-600 border-none rounded-lg text-xs font-semibold cursor-pointer transition-colors hover:bg-red-100 active:scale-95"
                           >🗑️ Hapus</button>
                         </div>
                       </div>
@@ -621,31 +714,58 @@ export default function MenuManagement() {
 
       {/* Category Management Modal */}
       {showCategoryModal && (
-        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 100, padding: '20px' }}>
-          <div style={{ background: '#fff', padding: '24px', borderRadius: '16px', width: '100%', maxWidth: '400px', boxShadow: '0 10px 30px rgba(0,0,0,0.2)' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
-              <h2 style={{ margin: 0, fontSize: '18px', color: '#2D3B2D' }}>Kelola Kategori</h2>
-              <button onClick={() => setShowCategoryModal(false)} style={{ background: 'none', border: 'none', fontSize: '20px', cursor: 'pointer', color: '#888' }}>✕</button>
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[100] p-4" onClick={e => { if (e.target === e.currentTarget) setShowCategoryModal(false); }}>
+          <div className="bg-white p-5 sm:p-6 rounded-2xl w-11/12 max-w-md shadow-[0_10px_30px_rgba(0,0,0,0.2)] max-h-[90vh] flex flex-col">
+            <div className="flex justify-between items-center mb-4 flex-shrink-0">
+              <h2 className="m-0 text-lg text-[#2D3B2D] font-bold">Kelola Kategori</h2>
+              <button
+                onClick={() => setShowCategoryModal(false)}
+                className="bg-transparent border-none text-xl cursor-pointer text-gray-400 hover:text-gray-600 min-w-[44px] min-h-[44px] flex items-center justify-center rounded-lg hover:bg-gray-100 transition-colors"
+              >✕</button>
             </div>
 
-            <div style={{ display: 'flex', gap: '8px', marginBottom: '20px' }}>
-              <input type="text" placeholder="Nama kategori baru..." value={newCatName} onChange={e => setNewCatName(e.target.value)} style={{ flex: 1, padding: '10px 14px', border: '1px solid #e2e8f0', borderRadius: '10px', fontSize: '14px', outline: 'none' }} onKeyDown={e => e.key === 'Enter' && handleAddCategory()} />
-              <button onClick={handleAddCategory} style={{ padding: '10px 16px', background: '#2D5A3F', color: '#fff', border: 'none', borderRadius: '10px', fontWeight: 700, cursor: 'pointer' }}>Tambah</button>
+            <div className="flex gap-2 mb-5 flex-shrink-0">
+              <input
+                type="text"
+                placeholder="Nama kategori baru..."
+                value={newCatName}
+                onChange={e => setNewCatName(e.target.value)}
+                className="flex-1 p-3 min-h-[44px] border border-slate-200 rounded-[10px] text-sm outline-none focus:border-[#2D5A3F] transition-colors"
+                onKeyDown={e => e.key === 'Enter' && handleAddCategory()}
+              />
+              <button
+                onClick={handleAddCategory}
+                className="px-4 py-3 min-h-[44px] bg-[#2D5A3F] text-white border-none rounded-[10px] font-bold cursor-pointer hover:bg-[#234A32] transition-colors active:scale-95 flex-shrink-0"
+              >Tambah</button>
             </div>
 
-            <div style={{ maxHeight: '300px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+            <div className="overflow-y-auto flex flex-col gap-2 flex-1 min-h-0">
               {categories.map(cat => (
-                <div key={cat} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 14px', background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: '10px' }}>
+                <div key={cat} className="flex items-center justify-between p-3 bg-slate-50 border border-slate-200 rounded-[10px]">
                   {editingCat === cat ? (
-                    <input autoFocus type="text" value={editCatName} onChange={e => setEditCatName(e.target.value)} onBlur={() => handleRenameCategory(cat, editCatName)} onKeyDown={e => e.key === 'Enter' && handleRenameCategory(cat, editCatName)} style={{ flex: 1, padding: '6px 10px', border: '1px solid #2D5A3F', borderRadius: '6px', fontSize: '14px', outline: 'none', marginRight: '8px' }} />
+                    <input
+                      autoFocus
+                      type="text"
+                      value={editCatName}
+                      onChange={e => setEditCatName(e.target.value)}
+                      onBlur={() => handleRenameCategory(cat, editCatName)}
+                      onKeyDown={e => e.key === 'Enter' && handleRenameCategory(cat, editCatName)}
+                      className="flex-1 px-2.5 py-1.5 min-h-[44px] border border-[#2D5A3F] rounded-md text-sm outline-none mr-2"
+                    />
                   ) : (
-                    <span style={{ fontSize: '14px', fontWeight: 600, color: '#2D3B2D', flex: 1 }}>{cat}</span>
+                    <span className="text-sm font-semibold text-[#2D3B2D] flex-1">{cat}</span>
                   )}
                   
                   {cat !== 'Lainnya' && (
-                    <div style={{ display: 'flex', gap: '6px' }}>
-                      <button onClick={() => { setEditingCat(cat); setEditCatName(cat); }} style={{ background: '#eff6ff', color: '#2563eb', border: 'none', padding: '6px', borderRadius: '6px', cursor: 'pointer' }}>✏️</button>
-                      <button onClick={() => handleDeleteCategory(cat)} style={{ background: '#fee2e2', color: '#dc2626', border: 'none', padding: '6px', borderRadius: '6px', cursor: 'pointer' }}>🗑️</button>
+                    <div className="flex gap-1.5 flex-shrink-0">
+                      <button
+                        onClick={() => { setEditingCat(cat); setEditCatName(cat); }}
+                        className="bg-blue-50 text-blue-600 border-none p-1.5 min-w-[44px] min-h-[44px] flex items-center justify-center rounded-md cursor-pointer hover:bg-blue-100 transition-colors"
+                      >✏️</button>
+                      <button
+                        onClick={() => handleDeleteCategory(cat)}
+                        className="bg-red-100 text-red-600 border-none p-1.5 min-w-[44px] min-h-[44px] flex items-center justify-center rounded-md cursor-pointer hover:bg-red-200 transition-colors"
+                      >🗑️</button>
                     </div>
                   )}
                 </div>
@@ -657,5 +777,3 @@ export default function MenuManagement() {
     </div>
   );
 }
-
-

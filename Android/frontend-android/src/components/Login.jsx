@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import dbManager from '../utils/indexedDB';
 
 const styles = {
   page: {
@@ -90,14 +91,26 @@ export default function Login({ onLogin }) {
   const [error, setError] = useState('');
   const [focusedField, setFocusedField] = useState('');
   const abortControllerRef = React.useRef(null);
-  const [logoSrc, setLogoSrc] = useState(localStorage.getItem('app_logo') || '/Logo.jpeg');
+  const [logoSrc, setLogoSrc] = useState('/Logo.jpeg');
+  const [appName, setAppName] = useState('RestoPOS');
 
   useEffect(() => {
-    const handleSettingsChange = () => {
-      setLogoSrc(localStorage.getItem('app_logo') || '/Logo.jpeg');
+    const loadFromDB = async () => {
+      try {
+        const savedLogo = await dbManager.getGlobalSetting('app_logo');
+        if (savedLogo) setLogoSrc(savedLogo);
+        const savedName = await dbManager.getGlobalSetting('app_name');
+        if (savedName) setAppName(savedName);
+      } catch (_) {}
     };
+    loadFromDB();
+    const handleSettingsChange = () => loadFromDB();
     window.addEventListener('app_settings_changed', handleSettingsChange);
-    return () => window.removeEventListener('app_settings_changed', handleSettingsChange);
+    window.addEventListener('master-data-updated', handleSettingsChange);
+    return () => {
+      window.removeEventListener('app_settings_changed', handleSettingsChange);
+      window.removeEventListener('master-data-updated', handleSettingsChange);
+    };
   }, []);
 
   const handleSubmit = async (e) => {
@@ -162,7 +175,7 @@ export default function Login({ onLogin }) {
           <div style={styles.logoBox}>
             <img src={logoSrc} alt="Logo" style={{ width: '100%', height: '100%', objectFit: 'cover' }} onError={(e) => { e.target.onerror = null; e.target.src = '/Logo.jpeg'; }} />
           </div>
-          <h1 style={styles.title}>{localStorage.getItem('app_name') || 'RestoPOS'}</h1>
+          <h1 style={styles.title}>{appName}</h1>
           <p style={styles.subtitle}>Sistem Kasir Restoran Digital</p>
         </div>
 

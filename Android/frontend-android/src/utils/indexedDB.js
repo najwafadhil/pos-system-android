@@ -23,7 +23,7 @@ const db = new Dexie('POSDatabase');
 // sudah ada di browser. Browser ini memiliki versi 20 dari sesi
 // sebelumnya, jadi kita gunakan versi 21.
 // Jika masih error VersionError, naikkan angka ini lebih tinggi.
-db.version(21).stores({
+db.version(22).stores({
     // Tabel offline_transactions:
     // Primary key = 'id' (UUID v4 string, diisi manual dari client)
     // Index: transaction_code (unique), sync_status, created_at
@@ -32,8 +32,16 @@ db.version(21).stores({
     // Tabel menu_items: cache katalog menu dari server
     menu_items: 'id, category, is_available',
 
-    // Tabel app_settings: key-value store untuk konfigurasi lokal
+    // Tabel app_settings: key-value store untuk konfigurasi LOKAL (device-specific)
+    // Contoh: bt_printer_mac, dll.
     app_settings: 'key',
+
+    // Tabel categories: cache daftar kategori dari server (sinkronisasi)
+    categories: 'id, name',
+
+    // Tabel global_settings: cache pengaturan global dari server (sinkronisasi)
+    // Contoh: app_name, app_logo, receipt_address
+    global_settings: 'key',
 
     // Hapus tabel lama (set null agar Dexie menghapusnya)
     pending_transactions: null,
@@ -383,6 +391,93 @@ class DexieDBManager {
         }
     }
 
+    // =============================================
+    // CATEGORIES OPERATIONS (Server-Synced)
+    // =============================================
+
+    /**
+     * Menyimpan/memperbarui seluruh daftar kategori dari server.
+     * Data lama dihapus dulu agar sinkron dengan server.
+     * @param {Array} categories - Array kategori dari API server [{id, name}]
+     */
+    async saveCategories(categories) {
+        try {
+            await this.db.transaction('rw', this.db.categories, async () => {
+                await this.db.categories.clear();
+                await this.db.categories.bulkAdd(categories);
+            });
+            console.log('📦 Categories cached:', categories.length, 'items');
+        } catch (error) {
+            console.error('❌ Error saving categories:', error);
+            throw error;
+        }
+    }
+
+    /**
+     * Mengambil semua kategori dari cache lokal.
+     * @returns {Array} Daftar semua kategori [{id, name}]
+     */
+    async getCategories() {
+        try {
+            return await this.db.categories.toArray();
+        } catch (error) {
+            console.error('❌ Error getting categories:', error);
+            return [];
+        }
+    }
+
+    // =============================================
+    // GLOBAL SETTINGS OPERATIONS (Server-Synced)
+    // =============================================
+
+    /**
+     * Menyimpan setting global (sinkronisasi dari server).
+     * @param {string} key - Nama setting (e.g. 'app_name', 'app_logo')
+     * @param {string} value - Nilai setting
+     */
+    async saveGlobalSetting(key, value) {
+        try {
+            await this.db.global_settings.put({
+                key,
+                value,
+                updated_at: new Date().toISOString(),
+            });
+        } catch (error) {
+            console.error('❌ Error saving global setting:', error);
+        }
+    }
+
+    /**
+     * Mengambil nilai setting global berdasarkan key.
+     * @param {string} key - Nama setting
+     * @returns {string|null} Nilai setting, atau null jika tidak ditemukan
+     */
+    async getGlobalSetting(key) {
+        try {
+            const result = await this.db.global_settings.get(key);
+            return result ? result.value : null;
+        } catch (error) {
+            console.error('❌ Error getting global setting:', error);
+            return null;
+        }
+    }
+
+    /**
+     * Mengambil semua setting global dari cache lokal.
+     * @returns {Array} Daftar semua setting [{key, value}]
+     */
+    async getAllGlobalSettings() {
+        try {
+            return await this.db.global_settings.toArray();
+        } catch (error) {
+            console.error('❌ Error getting all global settings:', error);
+            return [];
+        }
+    }
+
+    // =============================================
+    // CLEAR ALL DATA
+    // =============================================
 
     async clearAllData() {
         try {
@@ -391,10 +486,14 @@ class DexieDBManager {
                 this.db.offline_transactions,
                 this.db.menu_items,
                 this.db.app_settings,
+                this.db.categories,
+                this.db.global_settings,
                 async () => {
                     await this.db.offline_transactions.clear();
                     await this.db.menu_items.clear();
                     await this.db.app_settings.clear();
+                    await this.db.categories.clear();
+                    await this.db.global_settings.clear();
                 }
             );
             console.log('🧹 All IndexedDB data cleared');
@@ -411,3 +510,4 @@ class DexieDBManager {
 
 const dbManager = new DexieDBManager();
 export default dbManager;
+

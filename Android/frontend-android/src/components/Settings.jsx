@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Capacitor, registerPlugin } from '@capacitor/core';
+import dbManager from '../utils/indexedDB';
 
 const EscPosPrinterPlugin = registerPlugin('EscPosPrinter');
 
@@ -38,13 +39,14 @@ const MAX_LOGO_SIZE = 10 * 1024 * 1024;
 
 export default function Settings() {
   const navigate = useNavigate();
-  const [appName, setAppName] = useState(localStorage.getItem('app_name') || 'RestoPOS');
-  const [logoPreview, setLogoPreview] = useState(localStorage.getItem('app_logo') || null);
+  const [appName, setAppName] = useState('RestoPOS');
+  const [logoPreview, setLogoPreview] = useState(null);
   const [logoFile, setLogoFile] = useState(null);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState('');
   const [syncStatus, setSyncStatus] = useState(null);
   const [checkingSync, setCheckingSync] = useState(false);
+  const [settingsLoading, setSettingsLoading] = useState(true);
   const fileInputRef = useRef(null);
 
   // Bluetooth State
@@ -56,6 +58,26 @@ export default function Settings() {
 
   useEffect(() => {
     setIsNative(Capacitor.isNativePlatform());
+  }, []);
+
+  // =============================================
+  // LOAD SETTINGS from IndexedDB (cached from server)
+  // =============================================
+  useEffect(() => {
+    const loadSettings = async () => {
+      try {
+        const savedName = await dbManager.getGlobalSetting('app_name');
+        if (savedName) setAppName(savedName);
+
+        const savedLogo = await dbManager.getGlobalSetting('app_logo');
+        if (savedLogo) setLogoPreview(savedLogo);
+      } catch (err) {
+        console.warn('⚠️ Failed to load settings from IndexedDB:', err);
+      } finally {
+        setSettingsLoading(false);
+      }
+    };
+    loadSettings();
   }, []);
 
   const scanBluetoothPrinters = async () => {
@@ -117,18 +139,59 @@ export default function Settings() {
   const handleSave = async () => {
     setError('');
     try {
-      if (appName.trim()) localStorage.setItem('app_name', appName.trim());
+      const API_BASE = process.env.REACT_APP_API_URL || '';
+      const headers = {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${localStorage.getItem('auth_token')}`,
+      };
+
+      // Prepare settings to save
+      const settingsToSave = [];
+
+      if (appName.trim()) {
+        settingsToSave.push({ key: 'app_name', value: appName.trim() });
+      }
+
+      let compressedLogo = logoPreview;
       if (logoPreview && logoFile) {
-        const compressed = await compressImage(logoPreview);
-        localStorage.setItem('app_logo', compressed);
-        setLogoPreview(compressed);
-        // Update favicon dynamically
+        compressedLogo = await compressImage(logoPreview);
+        setLogoPreview(compressedLogo);
+      }
+      if (compressedLogo !== undefined) {
+        settingsToSave.push({ key: 'app_logo', value: compressedLogo || '' });
+      }
+
+      // Save to server API
+      if (settingsToSave.length > 0) {
+        try {
+          const res = await fetch(`${API_BASE}/api/settings`, {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({ settings: settingsToSave }),
+          });
+          const data = await res.json();
+          if (!data.success) {
+            console.warn('⚠️ Server save failed:', data.error);
+          }
+        } catch (apiErr) {
+          console.warn('⚠️ Failed to save settings to server (will sync later):', apiErr.message);
+        }
+      }
+
+      // Save to IndexedDB cache (always, for offline access)
+      for (const setting of settingsToSave) {
+        await dbManager.saveGlobalSetting(setting.key, setting.value);
+      }
+
+      // Update favicon dynamically
+      if (compressedLogo) {
         const link = document.querySelector("link[rel='icon']") || document.createElement('link');
         link.rel = 'icon';
-        link.href = compressed;
+        link.href = compressedLogo;
         document.head.appendChild(link);
       }
       
+      // bt_printer_mac stays in localStorage (device-specific)
       if (selectedBtPrinter) {
         localStorage.setItem('bt_printer_mac', selectedBtPrinter);
       } else {
@@ -140,14 +203,26 @@ export default function Settings() {
       setTimeout(() => setSaved(false), 3000);
     } catch (err) {
       console.error('Save settings error:', err);
-      setError('Gagal menyimpan logo. Coba gunakan gambar dengan ukuran lebih kecil.');
+      setError('Gagal menyimpan pengaturan. Coba lagi.');
     }
   };
 
-  const handleRemoveLogo = () => {
+  const handleRemoveLogo = async () => {
     setLogoFile(null);
     setLogoPreview(null);
-    localStorage.removeItem('app_logo');
+    // Update IndexedDB
+    await dbManager.saveGlobalSetting('app_logo', '');
+    // Update server
+    try {
+      await fetch(`${process.env.REACT_APP_API_URL || ""}/api/settings`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${localStorage.getItem('auth_token')}`,
+        },
+        body: JSON.stringify({ key: 'app_logo', value: '' }),
+      });
+    } catch (_) { /* will sync later */ }
     // Reset favicon to default
     const link = document.querySelector("link[rel='icon']");
     if (link) link.href = '/Logo.jpeg';

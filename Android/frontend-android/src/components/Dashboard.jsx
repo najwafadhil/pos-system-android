@@ -3,6 +3,7 @@
 // =============================================
 import React, { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
+import dbManager from '../utils/indexedDB';
 import { Line, Bar } from 'react-chartjs-2';
 import {
     Chart as ChartJS,
@@ -271,7 +272,8 @@ const Dashboard = ({ isOnline, syncVersion = 0 }) => {
         doc.setFont('helvetica', 'bold');
         doc.setFontSize(22);
         doc.setTextColor(45, 90, 63);
-        doc.text(localStorage.getItem('app_name') || 'Warung Nasi Rames Bu Rofi', margin, y);
+        const appNameForPDF = (await dbManager.getGlobalSetting('app_name')) || 'Warung Nasi Rames Bu Rofi';
+        doc.text(appNameForPDF, margin, y);
         doc.setFontSize(11);
         doc.setTextColor(100, 100, 100);
         doc.text('Laporan Penjualan', pageW - margin, y, { align: 'right' });

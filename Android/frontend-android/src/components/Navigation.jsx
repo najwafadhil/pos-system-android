@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { NavLink, useNavigate } from 'react-router-dom';
+import dbManager from '../utils/indexedDB';
 
 const IconCashier = () => (
   <svg width="22" height="22" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
@@ -52,27 +53,33 @@ const IconHamburger = () => (
 export default function Navigation({ user, onLogout }) {
   const navigate = useNavigate();
   const [appName, setAppName] = useState('RestoPOS');
-  const [appLogo, setAppLogo] = useState(localStorage.getItem('app_logo') || '/Logo.jpeg');
+  const [appLogo, setAppLogo] = useState('/Logo.jpeg');
   const [collapsed, setCollapsed] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
 
+  // Load settings from IndexedDB and listen for changes
   useEffect(() => {
-    const savedName = localStorage.getItem('app_name');
-    if (savedName) setAppName(savedName);
+    const loadFromDB = async () => {
+      try {
+        const savedName = await dbManager.getGlobalSetting('app_name');
+        if (savedName) setAppName(savedName);
 
-    const handleStorage = (e) => {
-      if (e.key === 'app_name') setAppName(e.newValue || 'RestoPOS');
-      if (e.key === 'app_logo') setAppLogo(e.newValue || '/Logo.jpeg');
+        const savedLogo = await dbManager.getGlobalSetting('app_logo');
+        if (savedLogo) setAppLogo(savedLogo);
+      } catch (err) {
+        console.warn('⚠️ Navigation: Failed to load settings from IndexedDB:', err);
+      }
     };
-    const handleCustom = () => {
-      setAppName(localStorage.getItem('app_name') || 'RestoPOS');
-      setAppLogo(localStorage.getItem('app_logo') || '/Logo.jpeg');
-    };
-    window.addEventListener('storage', handleStorage);
-    window.addEventListener('app_settings_changed', handleCustom);
+
+    loadFromDB();
+
+    // Re-read from IndexedDB when settings change
+    const handleSettingsChanged = () => loadFromDB();
+    window.addEventListener('app_settings_changed', handleSettingsChanged);
+    window.addEventListener('master-data-updated', handleSettingsChanged);
     return () => {
-      window.removeEventListener('storage', handleStorage);
-      window.removeEventListener('app_settings_changed', handleCustom);
+      window.removeEventListener('app_settings_changed', handleSettingsChanged);
+      window.removeEventListener('master-data-updated', handleSettingsChanged);
     };
   }, []);
 

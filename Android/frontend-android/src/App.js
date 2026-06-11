@@ -67,14 +67,19 @@ export default function App() {
     } catch (e) {
       console.error('Auth check failed:', e);
     }
-    // Inisialisasi favicon dari localStorage jika ada logo yang sudah disimpan
-    const savedLogo = localStorage.getItem('app_logo');
-    if (savedLogo) {
-      const link = document.querySelector("link[rel='icon']") || document.createElement('link');
-      link.rel = 'icon';
-      link.href = savedLogo;
-      document.head.appendChild(link);
-    }
+    // Inisialisasi favicon dari IndexedDB jika ada logo yang sudah disimpan
+    const initFavicon = async () => {
+      try {
+        const savedLogo = await dbManager.getGlobalSetting('app_logo');
+        if (savedLogo) {
+          const link = document.querySelector("link[rel='icon']") || document.createElement('link');
+          link.rel = 'icon';
+          link.href = savedLogo;
+          document.head.appendChild(link);
+        }
+      } catch (_) {}
+    };
+    initFavicon();
     // Tandai auth sudah dicek, baru boleh render routes
     setAuthReady(true);
   }, []);
@@ -89,6 +94,7 @@ export default function App() {
     syncVersion,
     syncNow,
     refreshPendingCount,
+    fetchMasterData,
   } = useSync();
 
   // =============================================

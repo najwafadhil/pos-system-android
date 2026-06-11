@@ -2,7 +2,7 @@
 // HOOK: useSync
 // =============================================
 // Custom React Hook yang mengelola sinkronisasi transaksi
-// offline ke backend server.
+// offline ke backend server DAN master data (categories, settings).
 //
 // Logika Sinkronisasi:
 // 1. Saat koneksi kembali online → ambil semua data dari
@@ -11,6 +11,12 @@
 // 3. Hapus data dari Dexie.js HANYA JIKA backend mengembalikan
 //    status HTTP 200 OK
 // 4. Jika gagal → tandai transaksi sebagai 'failed' untuk retry
+//
+// Master Data Sync:
+// - fetchMasterData() dijalankan saat app boot (online)
+// - Mengambil categories dan global settings dari server
+// - Disimpan ke IndexedDB sebagai cache offline
+// - Dispatch event 'master-data-updated' agar komponen lain refresh
 //
 // Auto-Retry Mechanism:
 // - Listens to Capacitor Network plugin AND window 'online' event
@@ -45,13 +51,14 @@ function getRetryDelay(retryCount) {
 }
 
 /**
- * Hook untuk mengelola sinkronisasi transaksi offline.
+ * Hook untuk mengelola sinkronisasi transaksi offline dan master data.
  * 
  * Fitur:
  * - Auto-sync saat koneksi kembali online (Capacitor Network + window event)
  * - Exponential backoff untuk retry transaksi gagal
  * - Periodic background sync sebagai safety net
  * - Strict HTTP 200 OK validation sebelum menghapus dari queue
+ * - fetchMasterData: sinkronisasi categories & settings dari server
  * 
  * @returns {Object} State dan fungsi sinkronisasi
  * @property {number} pendingSyncCount - Jumlah transaksi menunggu sync
@@ -61,6 +68,7 @@ function getRetryDelay(retryCount) {
  * @property {number} syncVersion - Counter yang naik setiap sync selesai
  * @property {Function} syncNow - Fungsi untuk memicu sync manual
  * @property {Function} refreshPendingCount - Refresh jumlah pending
+ * @property {Function} fetchMasterData - Fetch categories & settings dari server
  */
 export default function useSync() {
     const [pendingSyncCount, setPendingSyncCount] = useState(0);
@@ -80,6 +88,10 @@ export default function useSync() {
     const periodicSyncRef = useRef(null);
     // Ref for mounted state to prevent updates after unmount
     const isMountedRef = useRef(true);
+    // Ref to prevent concurrent master data fetch
+    const masterDataFetchingRef = useRef(false);
+    // Ref to track if localStorage migration has been attempted
+    const migrationDoneRef = useRef(false);
 
     // =============================================
     // REFRESH PENDING COUNT
@@ -99,6 +111,143 @@ export default function useSync() {
         } catch (error) {
             console.error('Error checking pending transactions:', error);
             return 0;
+        }
+    }, []);
+
+    // =============================================
+    // FETCH MASTER DATA (Categories & Settings)
+    // =============================================
+    // Mengambil data master dari server dan menyimpan ke IndexedDB.
+    // Dipanggil saat:
+    // 1. App boot (saat online)
+    // 2. Network reconnection
+    // 3. Manual refresh dari komponen
+    //
+    // Juga menjalankan one-time migration dari localStorage
+    // ke server API jika data lokal ada tapi server belum punya.
+    // =============================================
+    const fetchMasterData = useCallback(async () => {
+        if (!navigator.onLine) {
+            console.log('⏸️ Master data fetch skipped: browser is offline');
+            return;
+        }
+
+        if (masterDataFetchingRef.current) {
+            console.log('⏸️ Master data fetch skipped: already in progress');
+            return;
+        }
+
+        masterDataFetchingRef.current = true;
+        const authToken = localStorage.getItem('auth_token');
+        if (!authToken) {
+            masterDataFetchingRef.current = false;
+            return;
+        }
+
+        const headers = {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${authToken}`,
+        };
+
+        try {
+            // ── ONE-TIME MIGRATION from localStorage → API ──
+            // Hanya dijalankan sekali per session app.
+            if (!migrationDoneRef.current) {
+                migrationDoneRef.current = true;
+                try {
+                    // Migrate categories
+                    const localCats = localStorage.getItem('pos_custom_categories');
+                    if (localCats) {
+                        const parsed = JSON.parse(localCats);
+                        if (Array.isArray(parsed) && parsed.length > 0) {
+                            console.log('🔄 Migrating localStorage categories to server...');
+                            for (const catName of parsed) {
+                                try {
+                                    await fetch(`${API_BASE}/api/categories`, {
+                                        method: 'POST',
+                                        headers,
+                                        body: JSON.stringify({ action: 'create', name: catName }),
+                                    });
+                                } catch (_) { /* ignore individual failures */ }
+                            }
+                            // Remove localStorage entry after migration
+                            localStorage.removeItem('pos_custom_categories');
+                            console.log('✅ Categories migration complete');
+                        }
+                    }
+
+                    // Migrate app_name
+                    const localAppName = localStorage.getItem('app_name');
+                    if (localAppName) {
+                        try {
+                            await fetch(`${API_BASE}/api/settings`, {
+                                method: 'POST',
+                                headers,
+                                body: JSON.stringify({ key: 'app_name', value: localAppName }),
+                            });
+                            localStorage.removeItem('app_name');
+                            console.log('✅ app_name migration complete');
+                        } catch (_) { /* ignore */ }
+                    }
+
+                    // Migrate app_logo
+                    const localAppLogo = localStorage.getItem('app_logo');
+                    if (localAppLogo) {
+                        try {
+                            await fetch(`${API_BASE}/api/settings`, {
+                                method: 'POST',
+                                headers,
+                                body: JSON.stringify({ key: 'app_logo', value: localAppLogo }),
+                            });
+                            localStorage.removeItem('app_logo');
+                            console.log('✅ app_logo migration complete');
+                        } catch (_) { /* ignore */ }
+                    }
+                } catch (migrationError) {
+                    console.warn('⚠️ localStorage migration error (non-fatal):', migrationError.message);
+                }
+            }
+
+            // ── FETCH CATEGORIES ──
+            try {
+                const catRes = await fetch(`${API_BASE}/api/categories`, { headers });
+                if (catRes.ok) {
+                    const catData = await catRes.json();
+                    if (catData.success && Array.isArray(catData.data)) {
+                        await dbManager.saveCategories(catData.data);
+                        console.log('✅ Categories synced:', catData.data.length);
+                    }
+                }
+            } catch (catError) {
+                console.warn('⚠️ Failed to fetch categories:', catError.message);
+            }
+
+            // ── FETCH GLOBAL SETTINGS ──
+            try {
+                const settingsRes = await fetch(`${API_BASE}/api/settings`, { headers });
+                if (settingsRes.ok) {
+                    const settingsData = await settingsRes.json();
+                    if (settingsData.success && Array.isArray(settingsData.data)) {
+                        for (const setting of settingsData.data) {
+                            await dbManager.saveGlobalSetting(setting.key, setting.value);
+                        }
+                        console.log('✅ Global settings synced:', settingsData.data.length);
+                    }
+                }
+            } catch (settingsError) {
+                console.warn('⚠️ Failed to fetch settings:', settingsError.message);
+            }
+
+            // ── DISPATCH EVENT ──
+            // Notify semua komponen bahwa master data sudah diperbarui
+            window.dispatchEvent(new CustomEvent('master-data-updated', {
+                detail: { timestamp: new Date().toISOString() }
+            }));
+
+        } catch (error) {
+            console.error('❌ fetchMasterData error:', error);
+        } finally {
+            masterDataFetchingRef.current = false;
         }
     }, []);
 
@@ -342,7 +491,8 @@ export default function useSync() {
     // 1. Capacitor Network plugin (native, more reliable on Android)
     // 2. Window 'online' event (fallback for WebView/browser)
     //
-    // Both trigger syncNow() immediately when connection is restored.
+    // Both trigger syncNow() AND fetchMasterData() immediately
+    // when connection is restored.
     // The syncInProgressRef guard prevents duplicate concurrent syncs.
     // =============================================
     useEffect(() => {
@@ -364,6 +514,7 @@ export default function useSync() {
                         setTimeout(() => {
                             if (isMountedRef.current) {
                                 syncNow();
+                                fetchMasterData();
                             }
                         }, 1500);
                     } else {
@@ -391,6 +542,7 @@ export default function useSync() {
             setTimeout(() => {
                 if (isMountedRef.current) {
                     syncNow();
+                    fetchMasterData();
                 }
             }, 1500);
         };
@@ -421,9 +573,13 @@ export default function useSync() {
         }, RETRY_CONFIG.periodicSyncIntervalMs);
 
         // ------------------------------------------
-        // INITIAL: Refresh pending count on mount
+        // INITIAL: Refresh pending count + fetch master data
         // ------------------------------------------
         refreshPendingCount();
+        // Fetch master data on initial mount (if online)
+        if (navigator.onLine) {
+            fetchMasterData();
+        }
 
         // ------------------------------------------
         // CLEANUP
@@ -455,7 +611,7 @@ export default function useSync() {
                 clearInterval(periodicSyncRef.current);
             }
         };
-    }, [syncNow, refreshPendingCount]);
+    }, [syncNow, refreshPendingCount, fetchMasterData]);
 
     return {
         pendingSyncCount,
@@ -465,5 +621,7 @@ export default function useSync() {
         syncVersion,
         syncNow,
         refreshPendingCount,
+        fetchMasterData,
     };
 }
+

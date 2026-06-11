@@ -8,6 +8,7 @@
 // =============================================
 
 import React, { useState, useEffect } from 'react';
+import dbManager from '../utils/indexedDB';
 
 // Daftar pesan loading yang ditampilkan secara acak
 const loadingMessages = [
@@ -19,10 +20,23 @@ const loadingMessages = [
 ];
 
 export default function PageLoader() {
-  const [logoSrc] = useState(() => localStorage.getItem('app_logo') || '/Logo.jpeg');
-  const [appName] = useState(() => localStorage.getItem('app_name') || 'RestoPOS');
+  const [logoSrc, setLogoSrc] = useState('/Logo.jpeg');
+  const [appName, setAppName] = useState('RestoPOS');
   const [message] = useState(() => loadingMessages[Math.floor(Math.random() * loadingMessages.length)]);
   const [progress, setProgress] = useState(0);
+
+  // Load logo and app name from IndexedDB
+  useEffect(() => {
+    const loadSettings = async () => {
+      try {
+        const savedLogo = await dbManager.getGlobalSetting('app_logo');
+        if (savedLogo) setLogoSrc(savedLogo);
+        const savedName = await dbManager.getGlobalSetting('app_name');
+        if (savedName) setAppName(savedName);
+      } catch (_) {}
+    };
+    loadSettings();
+  }, []);
 
   // Animasi progress bar simulasi
   useEffect(() => {
