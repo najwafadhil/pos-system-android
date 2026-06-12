@@ -357,34 +357,35 @@ const generateImageViaHtml2Canvas = async (transaction, transactionCode) => {
         'padding: 20px',
         'color: #000000',
         'font-family: monospace',
+        'font-weight: bold',
         'overflow: visible',
         'box-sizing: border-box',
     ].join(';');
 
     container.innerHTML = `
-        ${logoDataUrl ? `<div style="text-align:center; margin-bottom:4px;"><img src="${logoDataUrl}" style="width:70px; height:auto; filter:grayscale(100%); display:block; margin:0 auto;"></div>` : ''}
-        <div style="text-align:center; font-weight:bold; font-size: 24px; margin-bottom:4px; word-wrap:break-word;">${appName}</div>
+        ${logoDataUrl ? `<div style="text-align:center; margin-bottom:8px;"><img src="${logoDataUrl}" style="width:120px; height:auto; filter:grayscale(100%); display:block; margin:0 auto;"></div>` : ''}
+        <div style="text-align:center; font-weight:900; font-size: 24px; margin-bottom:4px; word-wrap:break-word;">${appName}</div>
         <div style="text-align:center; font-size: 14px; margin-bottom:10px; word-wrap:break-word;">${STORE_ADDRESS}</div>
         <hr style="border-top:1px dashed #000; margin:5px 0;">
-        <table style="width:100%; font-size:14px; border-collapse:collapse;">
+        <table style="width:100%; font-size:16px; border-collapse:collapse;">
             <tr><td style="width:50px;">Waktu</td><td>: ${timestamp}</td></tr>
             <tr><td>Kasir</td><td>: ${kasirName}</td></tr>
             <tr><td>Trx</td><td>: ${transactionCode}</td></tr>
             ${transaction.customer_name ? `<tr><td>Plg</td><td>: ${transaction.customer_name}</td></tr>` : ''}
         </table>
         <hr style="border-top:1px dashed #000; margin:5px 0;">
-        <table style="width:100%; font-size:14px; border-collapse:collapse;">
+        <table style="width:100%; font-size:16px; border-collapse:collapse;">
             ${itemRows}
         </table>
         <hr style="border-top:1px dashed #000; margin:5px 0;">
-        <table style="width:100%; font-size:18px; border-collapse:collapse; font-weight:bold;">
+        <table style="width:100%; font-size:20px; border-collapse:collapse; font-weight:900;">
             <tr><td>TOTAL</td><td style="text-align:right;">Rp ${Math.round(total).toLocaleString('id-ID')}</td></tr>
         </table>
-        <table style="width:100%; font-size:14px; border-collapse:collapse; margin-top:5px;">
+        <table style="width:100%; font-size:16px; border-collapse:collapse; margin-top:5px;">
             <tr><td>BAYAR</td><td style="text-align:right;">${(transaction.payment_method || 'cash').toUpperCase()}</td></tr>
         </table>
         <hr style="border-top:1px dashed #000; margin:5px 0;">
-        <div style="text-align:center; margin-top:15px; margin-bottom:20px; font-size:14px;">Terima Kasih<br>Atas Kunjungan Anda</div>
+        <div style="text-align:center; margin-top:15px; margin-bottom:20px; font-size:16px;">Terima Kasih<br>Atas Kunjungan Anda</div>
     `;
 
     document.body.appendChild(container);
