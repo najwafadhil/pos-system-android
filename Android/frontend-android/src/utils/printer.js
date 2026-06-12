@@ -245,6 +245,7 @@ const generateImageViaHtml2Canvas = async (transaction, transactionCode) => {
     // =============================================
     let logoDataUrl = '';
     if (appLogo) {
+        // Logo tersedia di IndexedDB — gunakan langsung
         try {
             logoDataUrl = await new Promise((resolve) => {
                 const img = new Image();
@@ -261,6 +262,29 @@ const generateImageViaHtml2Canvas = async (transaction, transactionCode) => {
                 setTimeout(() => resolve(''), 5000);
             });
         } catch (e) {
+            logoDataUrl = '';
+        }
+    }
+
+    // Fallback: jika logo dari IndexedDB kosong, fetch /Logo.jpeg
+    // (sama seperti printThermalHTML agar logo konsisten muncul)
+    if (!logoDataUrl) {
+        try {
+            const logoUrl = (typeof process !== 'undefined' && process.env && process.env.PUBLIC_URL)
+                ? process.env.PUBLIC_URL + '/Logo.jpeg'
+                : '/Logo.jpeg';
+            const resp = await fetch(logoUrl);
+            if (resp.ok) {
+                const blob = await resp.blob();
+                logoDataUrl = await new Promise((resolve) => {
+                    const reader = new FileReader();
+                    reader.onloadend = () => resolve(reader.result);
+                    reader.onerror = () => resolve('');
+                    reader.readAsDataURL(blob);
+                });
+            }
+        } catch (e) {
+            console.warn('Logo fetch failed (html2canvas fallback):', e);
             logoDataUrl = '';
         }
     }
