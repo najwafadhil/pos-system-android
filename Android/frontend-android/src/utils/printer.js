@@ -11,6 +11,106 @@ import dbManager from './indexedDB';
 // Daftarkan Custom Native Plugin
 const EscPosPrinterPlugin = registerPlugin('EscPosPrinter');
 
+// =============================================
+// CENTRALIZED LOGO RETRIEVAL (DRY)
+// =============================================
+// In-memory cache agar tidak fetch/baca DB berulang dalam satu sesi
+let _cachedLogoDataUrl = null;
+
+/**
+ * Centralized logo retrieval with multi-level fallback.
+ * Flow: in-memory cache → IndexedDB app_logo → fetch /Logo.jpeg → ''
+ * Hasil di-cache di memory sehingga panggilan berikutnya instant.
+ * @returns {Promise<string>} Base64 data URL logo, atau '' jika tidak tersedia
+ */
+const getValidAppLogo = async () => {
+    // 1. In-memory cache (instant return)
+    if (_cachedLogoDataUrl !== null) {
+        return _cachedLogoDataUrl;
+    }
+
+    // 2. Cek IndexedDB
+    try {
+        const appLogo = await dbManager.getGlobalSetting('app_logo');
+        if (appLogo) {
+            _cachedLogoDataUrl = appLogo;
+            return _cachedLogoDataUrl;
+        }
+    } catch (e) {
+        console.warn('Failed to read app_logo from IndexedDB:', e);
+    }
+
+    // 3. Fallback: fetch /Logo.jpeg dan convert ke data URL
+    try {
+        const logoUrl = (typeof process !== 'undefined' && process.env && process.env.PUBLIC_URL)
+            ? process.env.PUBLIC_URL + '/Logo.jpeg'
+            : '/Logo.jpeg';
+        const resp = await fetch(logoUrl);
+        if (resp.ok) {
+            const blob = await resp.blob();
+            const dataUrl = await new Promise((resolve) => {
+                const reader = new FileReader();
+                reader.onloadend = () => resolve(reader.result);
+                reader.onerror = () => resolve('');
+                reader.readAsDataURL(blob);
+            });
+            if (dataUrl) {
+                _cachedLogoDataUrl = dataUrl;
+                return _cachedLogoDataUrl;
+            }
+        }
+    } catch (e) {
+        console.warn('Logo fetch fallback failed:', e);
+    }
+
+    // 4. Semua metode gagal
+    _cachedLogoDataUrl = '';
+    return '';
+};
+
+/**
+ * Pre-cache logo ke IndexedDB saat startup.
+ * Dipanggil sekali di App.js useEffect (setelah dbManager.init()).
+ * Jika app_logo sudah ada di IndexedDB (admin upload logo custom),
+ * fungsi ini TIDAK akan menimpa — hanya mengisi jika kosong.
+ * Juga mengisi in-memory cache untuk akses instant saat print.
+ */
+export const precacheAppLogo = async () => {
+    try {
+        // Cek apakah logo sudah ada di IndexedDB
+        const existingLogo = await dbManager.getGlobalSetting('app_logo');
+        if (existingLogo) {
+            // Sudah ada — cukup isi in-memory cache
+            _cachedLogoDataUrl = existingLogo;
+            console.log('🖼️ Logo already in IndexedDB, memory cache warmed.');
+            return;
+        }
+
+        // Belum ada di IndexedDB — fetch /Logo.jpeg dan simpan
+        const logoUrl = (typeof process !== 'undefined' && process.env && process.env.PUBLIC_URL)
+            ? process.env.PUBLIC_URL + '/Logo.jpeg'
+            : '/Logo.jpeg';
+        const resp = await fetch(logoUrl);
+        if (resp.ok) {
+            const blob = await resp.blob();
+            const dataUrl = await new Promise((resolve) => {
+                const reader = new FileReader();
+                reader.onloadend = () => resolve(reader.result);
+                reader.onerror = () => resolve('');
+                reader.readAsDataURL(blob);
+            });
+            if (dataUrl) {
+                await dbManager.saveGlobalSetting('app_logo', dataUrl);
+                _cachedLogoDataUrl = dataUrl;
+                console.log('🖼️ Logo pre-cached to IndexedDB from /Logo.jpeg');
+            }
+        }
+    } catch (e) {
+        console.warn('Logo pre-cache failed (non-critical):', e);
+    }
+};
+
+
 export const printReceipt = async (transaction, transactionCode) => {
     try {
         if (Capacitor.isNativePlatform()) {
@@ -157,9 +257,9 @@ const shareReceiptAsImage = async (transaction, transactionCode) => {
         total: "Rp " + Math.round(total).toLocaleString('id-ID'),
         paymentMethod: (transaction.payment_method || 'cash').toUpperCase(),
         logoBase64: await (async () => {
-            const appLogo = (await dbManager.getGlobalSetting('app_logo')) || '';
-            if (appLogo && appLogo.startsWith('data:')) {
-                return appLogo.split(',')[1] || '';
+            const logo = await getValidAppLogo();
+            if (logo && logo.startsWith('data:')) {
+                return logo.split(',')[1] || '';
             }
             return '';
         })(),
@@ -207,7 +307,7 @@ const shareReceiptAsImage = async (transaction, transactionCode) => {
 // =============================================
 const generateImageViaHtml2Canvas = async (transaction, transactionCode) => {
     const appName = (await dbManager.getGlobalSetting('app_name')) || 'Warung Nasi Rames Bu Rofi';
-    const appLogo = (await dbManager.getGlobalSetting('app_logo')) || '';
+
     const kasirData = localStorage.getItem('user_data');
     const kasirName = kasirData ? JSON.parse(kasirData).full_name || JSON.parse(kasirData).username : '-';
     
@@ -236,58 +336,8 @@ const generateImageViaHtml2Canvas = async (transaction, transactionCode) => {
         </tr>
     `).join('');
 
-    // =============================================
-    // STEP 1: Preload logo ke Canvas terlebih dahulu
-    // FIX: Use raw base64 data URL directly in <img>.
-    // Don't re-encode via canvas (which can fail in
-    // Capacitor WebView). The raw data URL is already
-    // valid and doesn't need a second conversion.
-    // =============================================
-    let logoDataUrl = '';
-    if (appLogo) {
-        // Logo tersedia di IndexedDB — gunakan langsung
-        try {
-            logoDataUrl = await new Promise((resolve) => {
-                const img = new Image();
-                img.crossOrigin = 'anonymous';
-                img.onload = () => {
-                    // Just resolve the original data URL directly.
-                    // Avoid re-drawing to a second canvas which can
-                    // fail silently in WebView environments.
-                    resolve(appLogo);
-                };
-                img.onerror = () => resolve('');
-                img.src = appLogo;
-                // Timeout: if after 5 detik belum load, skip
-                setTimeout(() => resolve(''), 5000);
-            });
-        } catch (e) {
-            logoDataUrl = '';
-        }
-    }
-
-    // Fallback: jika logo dari IndexedDB kosong, fetch /Logo.jpeg
-    // (sama seperti printThermalHTML agar logo konsisten muncul)
-    if (!logoDataUrl) {
-        try {
-            const logoUrl = (typeof process !== 'undefined' && process.env && process.env.PUBLIC_URL)
-                ? process.env.PUBLIC_URL + '/Logo.jpeg'
-                : '/Logo.jpeg';
-            const resp = await fetch(logoUrl);
-            if (resp.ok) {
-                const blob = await resp.blob();
-                logoDataUrl = await new Promise((resolve) => {
-                    const reader = new FileReader();
-                    reader.onloadend = () => resolve(reader.result);
-                    reader.onerror = () => resolve('');
-                    reader.readAsDataURL(blob);
-                });
-            }
-        } catch (e) {
-            console.warn('Logo fetch failed (html2canvas fallback):', e);
-            logoDataUrl = '';
-        }
-    }
+    // Logo: gunakan helper terpusat (DRY)
+    const logoDataUrl = await getValidAppLogo();
 
     // =============================================
     // STEP 2: Buat container HTML struk
@@ -542,7 +592,7 @@ const printViaWebUSB = async (transaction, transactionCode) => {
 // =============================================
 const printThermalHTML = async (transaction, transactionCode) => {
     const appName = (await dbManager.getGlobalSetting('app_name')) || 'Warung Nasi Rames Bu Rofi';
-    const appLogo = (await dbManager.getGlobalSetting('app_logo')) || '';
+
     const kasirData = localStorage.getItem('user_data');
     const kasirName = kasirData ? JSON.parse(kasirData).full_name || JSON.parse(kasirData).username : '-';
 
@@ -571,46 +621,8 @@ const printThermalHTML = async (transaction, transactionCode) => {
         </tr>
     `).join('');
 
-    // =============================================
-    // Load logo as inline base64 data URL.
-    // Using an external URL (/Logo.jpeg) inside an
-    // iframe causes a race condition — print() fires
-    // before the image finishes loading, resulting
-    // in a blank logo. Embedding as data URL ensures
-    // the image is instantly available.
-    //
-    // FIX v2: Use fetch() + FileReader instead of
-    // canvas.toDataURL(). The canvas approach fails
-    // silently in Capacitor WebView because the
-    // asset server doesn't send CORS headers, which
-    // taints the canvas and makes toDataURL() throw.
-    // fetch() bypasses this entirely.
-    // =============================================
-    let logoSrc = '';
-    if (appLogo) {
-        // Already a base64 data URL from localStorage
-        logoSrc = appLogo;
-    } else {
-        // Fetch /Logo.jpeg and convert to base64 data URL
-        try {
-            const logoUrl = (typeof process !== 'undefined' && process.env && process.env.PUBLIC_URL)
-                ? process.env.PUBLIC_URL + '/Logo.jpeg'
-                : '/Logo.jpeg';
-            const resp = await fetch(logoUrl);
-            if (resp.ok) {
-                const blob = await resp.blob();
-                logoSrc = await new Promise((resolve) => {
-                    const reader = new FileReader();
-                    reader.onloadend = () => resolve(reader.result);
-                    reader.onerror = () => resolve('');
-                    reader.readAsDataURL(blob);
-                });
-            }
-        } catch (e) {
-            console.warn('Logo fetch failed:', e);
-            logoSrc = '';
-        }
-    }
+    // Logo: gunakan helper terpusat (DRY)
+    const logoSrc = await getValidAppLogo();
 
     const logoTag = logoSrc
         ? `<div class="text-center" style="margin-bottom:4px;">
@@ -770,34 +782,11 @@ const printThermalHTML = async (transaction, transactionCode) => {
  */
 export const generateReceiptData = async (transaction, transactionCode) => {
     const appName = (await dbManager.getGlobalSetting('app_name')) || 'Warung Nasi Rames Bu Rofi';
-    const appLogo = (await dbManager.getGlobalSetting('app_logo')) || '';
     const kasirData = localStorage.getItem('user_data');
     const kasirName = kasirData ? JSON.parse(kasirData).full_name || JSON.parse(kasirData).username : '-';
 
-    // Resolve logo: try IndexedDB first, then fetch /Logo.jpeg (same as printThermalHTML)
-    let logoSrc = '';
-    if (appLogo) {
-        logoSrc = appLogo;
-    } else {
-        try {
-            const logoUrl = (typeof process !== 'undefined' && process.env && process.env.PUBLIC_URL)
-                ? process.env.PUBLIC_URL + '/Logo.jpeg'
-                : '/Logo.jpeg';
-            const resp = await fetch(logoUrl);
-            if (resp.ok) {
-                const blob = await resp.blob();
-                logoSrc = await new Promise((resolve) => {
-                    const reader = new FileReader();
-                    reader.onloadend = () => resolve(reader.result);
-                    reader.onerror = () => resolve('');
-                    reader.readAsDataURL(blob);
-                });
-            }
-        } catch (e) {
-            console.warn('Logo fetch failed:', e);
-            logoSrc = '';
-        }
-    }
+    // Logo: gunakan helper terpusat (DRY)
+    const logoSrc = await getValidAppLogo();
 
     const now = new Date();
     const timestamp = now.toLocaleString('id-ID', {

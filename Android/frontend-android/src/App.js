@@ -12,6 +12,7 @@ import React, { useEffect, useState, useCallback, Suspense } from 'react';
 import { Toaster } from 'react-hot-toast';
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import dbManager from './utils/indexedDB';
+import { precacheAppLogo } from './utils/printer';
 
 import useOnlineStatus from './hooks/useOnlineStatus';
 import useSync from './hooks/useSync';
@@ -133,6 +134,8 @@ export default function App() {
         console.log('✅ Dexie database ready');
         dbManager.clearSyncedTransactions(); // Bersihkan sisa data tersinkronisasi
         refreshPendingCount();
+        // Pre-cache logo ke IndexedDB agar print pertama tidak perlu fetch
+        precacheAppLogo().catch(() => {}); // Non-blocking, fire-and-forget
       })
       .catch((err) => {
         console.error('❌ Dexie init failed:', err);
